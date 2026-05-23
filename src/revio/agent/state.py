@@ -13,6 +13,7 @@ from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict
 
 from ..output.models import Finding
+from .patch import PatchSet
 
 
 Mode = Literal["review", "audit", "dedup"]
@@ -40,6 +41,9 @@ class AgentState(TypedDict, total=False):
 
     # --- Findings (accumulated across react iterations) ---
     findings: Annotated[list[Finding], operator.add]
+
+    # --- Patches proposed by the agent for dedup --fix ---
+    patches: Annotated[list[PatchSet], operator.add]
 
     # --- Reflect node output ---
     summary: str

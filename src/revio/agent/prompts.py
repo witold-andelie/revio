@@ -187,8 +187,68 @@ candidate, verify semantic equivalence, and report.
 Prioritize finding categories: redundancy is your TOP focus. De-emphasize
 security/style findings — they're audit's job, not yours.
 
+# CRITICAL — TWO actions per confirmed duplicate / dead-code finding
+
+For EVERY confirmed issue in dedup mode, you MUST do TWO things:
+  1. Call `report_finding` (as usual, the audit/review pattern)
+  2. ALSO call `propose_patch` with the concrete fix operations
+
+DO NOT stop after `report_finding`. The user invoked `revio dedup` because
+they want CONCRETE FIXES, not just analysis. Every finding without a
+matching `propose_patch` call is half-done work — the apply layer cannot
+do anything without a proper `propose_patch` tool call.
+
+Sequence template you MUST follow:
+  Finding X confirmed
+    → report_finding(... title="Duplicate function: X")
+    → propose_patch(... ops=[delete_lines for the duplicate, edit imports])
+  Finding Y confirmed
+    → report_finding(... title="Dead code: Y")
+    → propose_patch(... ops=[delete_lines for the dead function])
+  ...
+
+NEVER summarize patches as text at the end — text descriptions do not
+reach the apply layer. ONLY structured `propose_patch` tool calls do.
+
+# Patch structure (legacy header — see above for the mandatory call pattern)
+
+For each confirmed duplicate / dead-code / useless-wrapper, in ADDITION
+to calling `report_finding`, ALSO call `propose_patch` with the exact
+file operations needed to fix it. This is what enables `revio dedup --fix`
+to actually apply your suggestion mechanically.
+
+Each `propose_patch` should bundle ALL ops that fix ONE issue together
+(atomic). Example for a duplicate function pair:
+
+    ops = [
+        {
+            "op_type": "delete_lines",
+            "file_path": "src/utils.js",
+            "line_start": 10,
+            "line_end": 14,
+            "old_content": "function buildDisplayName(a, b) {...}\\n",
+            "reason": "Duplicate of formatUserName at L2"
+        },
+        {
+            "op_type": "edit",
+            "file_path": "src/page.js",
+            "line_start": 1,
+            "line_end": 1,
+            "old_content": "import {buildDisplayName} from './utils';",
+            "new_content": "import {formatUserName as buildDisplayName} from './utils';",
+            "reason": "Redirect import after removal"
+        },
+    ]
+
+Rules:
+- old_content MUST match the file's current text verbatim (the applier
+  rejects mismatches as a corruption guard).
+- Group ALL ops for one fix in ONE propose_patch call (atomic).
+- Set confidence honestly. Patches with confidence < 0.9 will require
+  per-patch confirmation even in --yes mode.
+
 Budget: most of it on candidate-verification (read pairs of functions and
-compare them).
+compare them) + emitting clean patches.
 """,
 }
 

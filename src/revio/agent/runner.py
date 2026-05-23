@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import os
 import time
 import uuid
@@ -18,6 +19,9 @@ from typing import Callable
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from ..config import Config
+
+
+logger = logging.getLogger(__name__)
 from ..detect import detect_project
 from ..output.models import ReviewReport
 from ..profiles import get_profile, load_all_profiles
@@ -87,6 +91,8 @@ async def run_agent(
         "tool_calls_budget": config.agent.max_tool_calls,
         "iteration": 0,
         "findings": [],
+        "patches": [],
+        "dropped_findings": [],
         "plan": "",
         "summary": "",
         "systemic_observations": [],
@@ -174,6 +180,9 @@ async def run_agent(
                         ("revio.output.models", "Finding"),
                         ("revio.output.models", "Evidence"),
                         ("revio.output.models", "ReviewReport"),
+                        # Patches for `revio dedup --fix`
+                        ("revio.agent.patch", "PatchOp"),
+                        ("revio.agent.patch", "PatchSet"),
                     ]
                 )
             except Exception:
@@ -200,6 +209,26 @@ async def run_agent(
 
     # Build the final report
     report = _build_report(final_state, config)
+
+    # Stash patches in the CLI's module-level cache so `revio dedup --fix`
+    # can pick them up.
+    #
+    # NOTE on the import dance: `revio/cli/__init__.py` does
+    # `from .main import main`, which makes `revio.cli.main` refer to the
+    # FUNCTION (an attribute on the package), not the module. Even
+    # `import revio.cli.main as X` resolves to the function because Python
+    # picks the attribute when both name kinds exist. We bypass that by
+    # importing the module first (to make sure it's loaded into sys.modules)
+    # then reaching for the actual module object via sys.modules.
+    try:
+        import sys
+        import revio.cli.main  # ensures the module is in sys.modules
+        cli_main_module = sys.modules["revio.cli.main"]
+        patches = final_state.get("patches", []) or []
+        cli_main_module._last_session_patches = list(patches)
+        logger.info("revio: cached %d patches for --fix flow", len(patches))
+    except Exception as e:
+        logger.warning("revio: failed to cache patches: %s", e)
 
     # Cross-session findings comparison + persistence
     try:

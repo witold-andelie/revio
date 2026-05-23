@@ -30,6 +30,7 @@ from .tools import (
     make_load_skill_tool,
     make_read_file_tool,
     make_search_guidelines_tool,
+    propose_patch,
     report_finding,
 )
 
@@ -177,6 +178,7 @@ async def react_node(state: AgentState, config) -> dict:
         search_guidelines_tool,
         load_skill_tool,
         report_finding,
+        propose_patch,
     ]
 
     # Profile-specific tools (Layer 1 + Layer 2)
@@ -212,8 +214,10 @@ async def react_node(state: AgentState, config) -> dict:
     used = state.get("tool_calls_used", 0)
     iteration = state.get("iteration", 0)
 
-    # New findings collected in this node call (state reducer will concat)
+    # New findings + patches collected in this node call (state reducers
+    # will concat into the global state via Annotated[..., operator.add]).
     new_findings: list[Finding] = []
+    new_patches: list = []
 
     while True:
         iteration += 1
@@ -273,15 +277,32 @@ async def react_node(state: AgentState, config) -> dict:
                 )
                 continue
 
-            # Special case: report_finding returns a Command with state update.
-            # The Finding objects flow into state via the reducer; the chat
-            # history gets a human-readable acknowledgement.
-            if hasattr(result, "update") and "findings" in (result.update or {}):
-                findings = result.update["findings"]
-                new_findings.extend(findings)
-                title = findings[0].title if findings else "(unnamed)"
+            # Commands carry state updates from tools to the graph state.
+            # We extract them here so they flow into the node's return dict
+            # (LangGraph's reducer will then merge with global state).
+            if hasattr(result, "update") and result.update:
+                update = result.update
+                ack_parts: list[str] = []
+
+                if "findings" in update:
+                    findings = update["findings"]
+                    new_findings.extend(findings)
+                    if findings:
+                        ack_parts.append(f"Recorded finding: {findings[0].title}")
+
+                if "patches" in update:
+                    patches = update["patches"]
+                    new_patches.extend(patches)
+                    if patches:
+                        ack_parts.append(
+                            f"Queued patch: {patches[0].title} "
+                            f"({len(patches[0].ops)} ops)"
+                        )
+
+                if not ack_parts:
+                    ack_parts.append(str(result))
                 messages.append(
-                    ToolMessage(content=f"Recorded finding: {title}", tool_call_id=tcid)
+                    ToolMessage(content=" · ".join(ack_parts), tool_call_id=tcid)
                 )
             else:
                 messages.append(
@@ -316,6 +337,8 @@ async def react_node(state: AgentState, config) -> dict:
         "findings": grounded,
         # Dropped findings surface to user but don't count as real findings.
         "dropped_findings": dropped,
+        # Patches flow through unchanged — `revio dedup --fix` consumes them.
+        "patches": new_patches,
     }
 
 

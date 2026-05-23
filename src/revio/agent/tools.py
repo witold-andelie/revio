@@ -21,6 +21,7 @@ from ..output.models import (
     ReviewCategory,
     Severity,
 )
+from .patch import PatchOp, PatchSet
 from .tool_context import ToolContext
 
 
@@ -225,6 +226,66 @@ def report_finding(
 
     # Use a Command to update state (findings reducer concatenates)
     return Command(update={"findings": [finding]})
+
+
+# --- propose_patch ------------------------------------------------------------
+
+
+@tool
+def propose_patch(
+    title: str,
+    description: str,
+    ops: list[dict],
+    finding_ref: str = "",
+    confidence: float = 0.8,
+) -> Command:
+    """Propose a structured code change (patch) that `revio dedup --fix` can apply.
+
+    Use this in DEDUP MODE to suggest concrete fixes the user can opt into.
+    Each PatchSet is an atomic group of file operations that fix ONE issue
+    together (e.g., delete a duplicate function + update its 3 import sites).
+
+    Args:
+        title: Short headline (max 200 chars).
+        description: 1-2 sentences explaining why this fix is safe.
+        ops: List of operation dicts. Each dict has:
+            - op_type: "edit" | "delete_lines" | "delete_file" | "create_file" | "rename"
+            - file_path: relative path under repo root
+            - line_start, line_end: 1-indexed range (for edit / delete_lines)
+            - old_content: verbatim current text of the range
+              (anti-corruption check — applier rejects if mismatch)
+            - new_content: replacement text (for edit / create_file)
+            - new_path: target for rename
+            - reason: short explanation of THIS op
+        finding_ref: optional title of the Finding this patch addresses.
+        confidence: 0.0-1.0, how sure you are.
+
+    Returns:
+        Confirmation message. The patch is queued in agent state for the
+        post-agent fix flow.
+    """
+    parsed_ops: list[PatchOp] = []
+    for op_dict in ops:
+        try:
+            parsed_ops.append(PatchOp.model_validate(op_dict))
+        except Exception:
+            # Skip malformed ops; the patch will still be queued with whatever
+            # parses. Caller can inspect via revio dedup output.
+            continue
+
+    if not parsed_ops:
+        return Command(update={})  # Nothing to record
+
+    patchset = PatchSet(
+        title=title[:200],
+        description=description,
+        ops=parsed_ops,
+        finding_ref=finding_ref or None,
+        confidence=max(0.0, min(1.0, confidence)),
+        created_by="agent",
+    )
+
+    return Command(update={"patches": [patchset]})
 
 
 # --- search_guidelines --------------------------------------------------------
