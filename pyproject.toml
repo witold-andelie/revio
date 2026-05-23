@@ -1,0 +1,73 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "revio"
+version = "0.1.0"
+description = "Agentic code review CLI — diff review, full-repo audit, AI-redundancy dedup"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "revio" }]
+
+dependencies = [
+    # Agent runtime
+    "langgraph>=0.2.0",
+    "langchain-anthropic>=0.3.0",
+    "langchain-openai>=0.2.0",
+    "langchain-core>=0.3.0",
+    # CLI
+    "typer>=0.12.0",
+    "prompt_toolkit>=3.0.43",
+    "questionary>=2.0.1",
+    "rich>=13.7.0",
+    # Config + models
+    "pydantic>=2.7.0",
+    "pydantic-settings>=2.3.0",
+    "tomli>=2.0.1; python_version < '3.11'",
+    # Git
+    "gitpython>=3.1.40",
+    # Reliability
+    "tenacity>=8.2.0",
+    # Checkpointing
+    "langgraph-checkpoint-sqlite>=2.0.0",
+]
+
+[project.optional-dependencies]
+js = [
+    "tree-sitter>=0.23.0",
+    "tree-sitter-javascript>=0.23.0",
+    "tree-sitter-typescript>=0.23.0",
+]
+plc = [
+    "lxml>=5.0.0",
+]
+python = [
+    "tree-sitter>=0.23.0",
+    "tree-sitter-python>=0.23.0",
+]
+all = ["revio[js,plc,python]"]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.6.0",
+]
+
+[project.scripts]
+revio = "revio.cli.main:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501"]
