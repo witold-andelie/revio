@@ -18,7 +18,13 @@ from .grounding import collect_tool_facts, sanitize_plan_text, validate_findings
 from .llm import make_llm
 from .prompts import PLAN_PROMPT, REACT_INTRO_PROMPT, REFLECT_PROMPT, SYSTEM_PROMPT
 from .state import AgentState
-from .tools import make_list_files_tool, make_read_file_tool, report_finding
+from .tool_context import ToolContext
+from .tools import (
+    make_list_files_tool,
+    make_read_file_tool,
+    make_search_guidelines_tool,
+    report_finding,
+)
 
 
 # --- Node: plan ---------------------------------------------------------------
@@ -76,21 +82,23 @@ async def react_node(state: AgentState, config) -> dict:
     repo_root = Path(state["repo_path"])
     profile_name = state.get("profile_name", "auto")
 
+    # Shared per-session context (RAG / parser indexes / static analyzers)
+    ctx = ToolContext(repo_root=repo_root, profile_name=profile_name or "auto")
+
     # Universal tools (every profile gets these)
     list_files_tool = make_list_files_tool(repo_root)
     read_file_tool = make_read_file_tool(repo_root)
-    tools = [list_files_tool, read_file_tool, report_finding]
+    search_guidelines_tool = make_search_guidelines_tool(ctx)
+    tools = [list_files_tool, read_file_tool, search_guidelines_tool, report_finding]
 
     # Profile-specific tools (Layer 1 + Layer 2)
     if profile_name and profile_name != "auto":
         try:
             from ..profiles import get_profile, load_all_profiles
-            from .tool_context import ToolContext
 
             load_all_profiles()
             profile_cls = get_profile(profile_name)
             if profile_cls is not None:
-                ctx = ToolContext(repo_root=repo_root, profile_name=profile_name)
                 profile_tools = profile_cls.make_tools(ctx)
                 tools.extend(profile_tools)
         except Exception as e:

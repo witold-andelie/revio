@@ -50,6 +50,9 @@ app = typer.Typer(
 config_app = typer.Typer(help="Manage revio's configuration.")
 app.add_typer(config_app, name="config")
 
+guidelines_app = typer.Typer(help="Manage the RAG index over your coding guidelines.")
+app.add_typer(guidelines_app, name="guidelines")
+
 
 # --- Root callback ------------------------------------------------------------
 
@@ -305,6 +308,143 @@ def config_edit():
         raise typer.Exit(code=1)
     editor = os.environ.get("EDITOR", "nano")
     os.system(f'{editor} "{path}"')
+
+
+# --- guidelines subcommands ---------------------------------------------------
+
+
+def _resolve_repo_root() -> Path:
+    """Pick the repo root for guidelines storage (current dir for now)."""
+    return Path.cwd().resolve()
+
+
+@guidelines_app.command("add", help="Index one or more guideline files / directories.")
+def guidelines_add(
+    paths: list[Path] = typer.Argument(..., help="Files or directories to index."),
+):
+    from ..layers.rag import DocumentLoader, GuidelineIndexer
+
+    repo = _resolve_repo_root()
+    indexer = GuidelineIndexer(repo_root=repo)
+    total_chunks = 0
+    total_files = 0
+
+    for raw_path in paths:
+        p = Path(raw_path).expanduser().resolve()
+        if not p.exists():
+            _err_console.print(f"  ✗ not found: {p}")
+            continue
+
+        if p.is_dir():
+            docs = DocumentLoader.load_directory(p)
+        else:
+            docs = DocumentLoader.load_file(p)
+
+        if not docs:
+            _console.print(f"  [yellow]·[/] no chunks extracted from {p}")
+            continue
+
+        n = indexer.index_documents(docs)
+        total_chunks += n
+        # Distinct file count from metadata
+        distinct_sources = {d.metadata.get("source") for d in docs}
+        total_files += len(distinct_sources)
+        _console.print(f"  [green]✓[/] indexed {n} chunks from {p}")
+
+    _console.print()
+    _console.print(
+        f"  [bold]Total:[/] {total_chunks} chunks from {total_files} files. "
+        f"Index now has {indexer.count()} chunks."
+    )
+
+
+@guidelines_app.command("list", help="List all indexed guideline files.")
+def guidelines_list():
+    from ..layers.rag import GuidelineIndexer
+
+    repo = _resolve_repo_root()
+    indexer = GuidelineIndexer(repo_root=repo)
+    sources = indexer.list_sources()
+    count = indexer.count()
+
+    if not sources:
+        _console.print("  [dim](no guidelines indexed for this repo)[/]")
+        _console.print(f"  Add some with: [bold]revio guidelines add <file_or_dir>[/]")
+        return
+
+    _console.print(f"  [bold]{len(sources)} files[/] indexed ({count} chunks total):")
+    for src in sources:
+        _console.print(f"    · {src}")
+
+
+@guidelines_app.command("clear", help="Remove all guideline chunks from the index.")
+def guidelines_clear():
+    from ..layers.rag import GuidelineIndexer
+
+    if not questionary.confirm(
+        "This will drop the entire guideline index for this repo. Continue?",
+        default=False,
+    ).ask():
+        _console.print("  [dim]cancelled[/]")
+        return
+
+    repo = _resolve_repo_root()
+    indexer = GuidelineIndexer(repo_root=repo)
+    indexer.clear()
+    _console.print("  [green]✓[/] index cleared")
+
+
+@guidelines_app.command("reindex", help="Drop and rebuild the index from .revio/guidelines/.")
+def guidelines_reindex():
+    from ..layers.rag import DocumentLoader, GuidelineIndexer
+
+    repo = _resolve_repo_root()
+    guidelines_dir = repo / ".revio" / "guidelines"
+    if not guidelines_dir.is_dir():
+        _err_console.print(f"  ✗ no guidelines dir at {guidelines_dir}")
+        _console.print(
+            "  Create it and drop your guideline files there, then rerun. "
+            "Or use [bold]revio guidelines add <path>[/] for arbitrary paths."
+        )
+        raise typer.Exit(code=1)
+
+    indexer = GuidelineIndexer(repo_root=repo)
+    indexer.clear()
+    docs = DocumentLoader.load_directory(guidelines_dir)
+    n = indexer.index_documents(docs)
+    _console.print(f"  [green]✓[/] reindexed: {n} chunks from {guidelines_dir}")
+
+
+@guidelines_app.command("search", help="Test the RAG retrieval with a query.")
+def guidelines_search(
+    query: str = typer.Argument(..., help="Query text."),
+    k: int = typer.Option(5, "--k", help="Number of results."),
+):
+    from ..layers.rag import GuidelineRetriever
+
+    repo = _resolve_repo_root()
+    retriever = GuidelineRetriever(repo_root=repo)
+    if not retriever.has_index():
+        _err_console.print("  ✗ no guidelines indexed for this repo. Run `revio guidelines add` first.")
+        raise typer.Exit(code=1)
+
+    results = retriever.search_with_scores(query, k=k)
+    if not results:
+        _console.print(f"  [yellow]·[/] no matches for {query!r}")
+        return
+
+    _console.print(f"  [bold]{len(results)} results[/] for {query!r}:\n")
+    for doc, score in results:
+        src = Path(doc.metadata.get("source", "?")).name
+        section = doc.metadata.get("section_title", "")
+        location = f"{src}" + (f" / {section}" if section else "")
+        body = doc.page_content.strip()
+        if len(body) > 300:
+            body = body[:300] + "..."
+        _console.print(f"  [cyan]{location}[/]  [dim](relevance={score:.2f})[/]")
+        for ln in body.splitlines():
+            _console.print(f"    {ln}")
+        _console.print()
 
 
 # --- main ---------------------------------------------------------------------

@@ -1,19 +1,18 @@
-"""Agent tools.
+"""Universal agent tools (available in every profile).
 
-M1: only two tools.
-- read_file : let the agent fetch source on demand (so it pulls only what it needs)
-- report_finding : let the agent emit structured findings via state update
+Includes:
+- list_files, read_file        : repo exploration
+- report_finding               : structured finding emission via Command state update
+- search_guidelines            : RAG over company/client coding standards
 
-More tools (grep, get_call_sites, run_oxlint, ...) arrive in M2.
+Profile-specific tools (run_oxlint, get_function_at, ...) live in js_tools.py.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated
 
 from langchain_core.tools import tool
-from langgraph.prebuilt import InjectedState
 from langgraph.types import Command
 
 from ..output.models import (
@@ -22,6 +21,7 @@ from ..output.models import (
     ReviewCategory,
     Severity,
 )
+from .tool_context import ToolContext
 
 
 # --- list_files ---------------------------------------------------------------
@@ -225,3 +225,76 @@ def report_finding(
 
     # Use a Command to update state (findings reducer concatenates)
     return Command(update={"findings": [finding]})
+
+
+# --- search_guidelines --------------------------------------------------------
+
+
+def make_search_guidelines_tool(ctx: ToolContext):
+    """Build the search_guidelines tool bound to a session's RAG retriever.
+
+    Returns a no-op tool if no guidelines are indexed (the agent will see
+    the message and skip RAG queries).
+    """
+
+    @tool
+    def search_guidelines(query: str, k: int = 5) -> str:
+        """Search the company's coding guidelines / policies via semantic search.
+
+        Use this BEFORE flagging style/architecture/security findings to verify
+        whether the project has a documented policy on the pattern you're
+        questioning. Citing a specific guideline section makes findings
+        actionable and avoids opinionated false positives.
+
+        Args:
+            query: Natural-language query. Examples:
+              - "SQL injection prevention"
+              - "naming conventions for React components"
+              - "logging policy for sensitive data"
+              - "approved cryptographic algorithms"
+            k: Number of results to return (default 5, max 20).
+
+        Returns:
+            Top-k matching guideline chunks with source file and section.
+            If no guidelines are indexed, returns a clear message.
+        """
+        retriever = ctx.rag
+        if retriever is None:
+            return (
+                "No guidelines indexed for this repository. "
+                "The user can add guidelines via `revio guidelines add <path>`. "
+                "Proceed without policy-based evidence — your findings will rely on "
+                "general best practices alone."
+            )
+
+        k = max(1, min(20, k))
+        results = retriever.search_with_scores(query, k=k)
+        if not results:
+            return f"(no guideline chunks matched query {query!r})"
+
+        lines = [f"# Guideline search: {query!r} ({len(results)} hits)"]
+        for doc, score in results:
+            source = Path(doc.metadata.get("source", "?")).name
+            section = doc.metadata.get("section_title", "")
+            page = doc.metadata.get("page_number")
+            location = f"{source}"
+            if section:
+                location += f" / {section}"
+            if page:
+                location += f" (p.{page})"
+            lines.append(f"\n[{location}] (relevance={score:.2f})")
+            # Indent the chunk body so it's visually separated
+            body = doc.page_content.strip()
+            if len(body) > 600:
+                body = body[:600] + "..."
+            for ln in body.splitlines():
+                lines.append(f"  {ln}")
+        lines.append(
+            "\n# How to use these results:\n"
+            "  Cite the specific guideline (filename + section title) as one of your "
+            "evidence_summaries when calling report_finding. Example:\n"
+            "    'security_checklist.md / SQL Injection Prevention: requires parameterized queries'"
+        )
+        return "\n".join(lines)
+
+    return search_guidelines

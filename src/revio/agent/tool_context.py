@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from ..layers.parser.call_graph import CallGraph
     from ..layers.parser.function_index import FunctionIndex
     from ..layers.parser.symbol_graph import SymbolGraph
+    from ..layers.rag.retriever import GuidelineRetriever
     from ..layers.static.oxlint import OxlintRunner
 
 
@@ -45,6 +46,8 @@ class ToolContext:
     _function_index: "FunctionIndex | None" = field(default=None, init=False, repr=False)
     _oxlint_runner: "OxlintRunner | None" = field(default=None, init=False, repr=False)
     _oxlint_unavailable: bool = field(default=False, init=False, repr=False)
+    _rag_retriever: "GuidelineRetriever | None" = field(default=None, init=False, repr=False)
+    _rag_unavailable: bool = field(default=False, init=False, repr=False)
 
     # ---- Layer 1 ----
 
@@ -89,3 +92,26 @@ class ToolContext:
                 self._oxlint_unavailable = True
                 return None
         return self._oxlint_runner
+
+    # ---- RAG ----
+
+    @property
+    def rag(self) -> "GuidelineRetriever | None":
+        """Lazy-load the guidelines retriever. None if no index exists."""
+        if self._rag_unavailable:
+            return None
+        if self._rag_retriever is None:
+            try:
+                from ..layers.rag.retriever import GuidelineRetriever
+
+                retriever = GuidelineRetriever(repo_root=self.repo_root)
+                if not retriever.has_index():
+                    # No guidelines indexed; mark unavailable to skip future checks
+                    self._rag_unavailable = True
+                    return None
+                self._rag_retriever = retriever
+            except Exception as e:
+                logger.warning("RAG unavailable: %s", e)
+                self._rag_unavailable = True
+                return None
+        return self._rag_retriever
