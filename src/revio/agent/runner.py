@@ -115,41 +115,88 @@ async def run_agent(
 
     final_state: dict = {}
 
-    async with AsyncSqliteSaver.from_conn_string(str(db_path)) as checkpointer:
-        # Register our custom Pydantic types in the checkpointer's msgpack
-        # allowlist so they round-trip without deprecation warnings.
-        try:
-            from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+    # Build MCP server configs from the user's config
+    from mcp.client.session_group import ClientSessionGroup
 
-            checkpointer.serde = JsonPlusSerializer(
-                allowed_msgpack_modules=[
-                    ("revio.output.models", "Severity"),
-                    ("revio.output.models", "ReviewCategory"),
-                    ("revio.output.models", "Finding"),
-                    ("revio.output.models", "Evidence"),
-                    ("revio.output.models", "ReviewReport"),
-                ]
-            )
-        except Exception:
-            pass  # Best-effort; permissive default still works
+    from .mcp_client import (
+        MCPServerConfig,
+        connect_servers,
+        connection_summary,
+        langchain_tools_from,
+        make_name_hook,
+    )
 
-        graph = build_graph(checkpointer=checkpointer)
+    mcp_server_configs: list[MCPServerConfig] = []
+    for name, spec in (config.mcp.servers or {}).items():
+        if not spec.enabled:
+            continue
+        mcp_server_configs.append(MCPServerConfig(
+            name=name,
+            command=spec.command,
+            args=list(spec.args),
+            env=dict(spec.env),
+            url=spec.url,
+            api_key_env=spec.api_key_env,
+            timeout=spec.timeout,
+        ))
 
-        run_config = {
-            "configurable": {
-                "thread_id": thread_id,
-                "app_config": config,
-            },
-            "recursion_limit": 50,
-        }
+    # Per-call mutable name holder — used by the component name hook so each
+    # server's tools get prefixed with the right alias.
+    name_holder: dict[str, str] = {"current": ""}
 
-        # Stream every event from the graph
-        async for ev in graph.astream_events(initial, run_config, version="v2"):
-            _dispatch_event(ev, on_event)
+    async with ClientSessionGroup(component_name_hook=make_name_hook(name_holder)) as mcp_group:
+        connect_results = await connect_servers(mcp_group, mcp_server_configs, name_holder=name_holder)
+        mcp_tools = langchain_tools_from(mcp_group)
 
-        # Capture final state
-        snapshot = await graph.aget_state(run_config)
-        final_state = snapshot.values
+        # Surface MCP connection results to the stream
+        if mcp_server_configs:
+            on_event("mcp_connected", {
+                "servers": [
+                    {"name": r.name, "connected": r.connected, "tool_count": r.new_tool_count}
+                    for r in connect_results
+                ],
+                "failures": [
+                    {"name": r.name, "error": r.error}
+                    for r in connect_results if not r.connected
+                ],
+            })
+
+        async with AsyncSqliteSaver.from_conn_string(str(db_path)) as checkpointer:
+            # Register our custom Pydantic types in the checkpointer's msgpack
+            # allowlist so they round-trip without deprecation warnings.
+            try:
+                from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
+                checkpointer.serde = JsonPlusSerializer(
+                    allowed_msgpack_modules=[
+                        ("revio.output.models", "Severity"),
+                        ("revio.output.models", "ReviewCategory"),
+                        ("revio.output.models", "Finding"),
+                        ("revio.output.models", "Evidence"),
+                        ("revio.output.models", "ReviewReport"),
+                    ]
+                )
+            except Exception:
+                pass  # Best-effort; permissive default still works
+
+            graph = build_graph(checkpointer=checkpointer)
+
+            run_config = {
+                "configurable": {
+                    "thread_id": thread_id,
+                    "app_config": config,
+                    "mcp_tools": mcp_tools,  # available to react_node
+                },
+                "recursion_limit": 50,
+            }
+
+            # Stream every event from the graph
+            async for ev in graph.astream_events(initial, run_config, version="v2"):
+                _dispatch_event(ev, on_event)
+
+            # Capture final state
+            snapshot = await graph.aget_state(run_config)
+            final_state = snapshot.values
 
     # Build the final report
     report = _build_report(final_state, config)

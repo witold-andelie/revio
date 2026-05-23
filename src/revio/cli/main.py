@@ -53,6 +53,9 @@ app.add_typer(config_app, name="config")
 guidelines_app = typer.Typer(help="Manage the RAG index over your coding guidelines.")
 app.add_typer(guidelines_app, name="guidelines")
 
+skills_app = typer.Typer(help="Manage agent skills (Anthropic Agent Skills spec).")
+app.add_typer(skills_app, name="skills")
+
 
 # --- Root callback ------------------------------------------------------------
 
@@ -445,6 +448,88 @@ def guidelines_search(
         for ln in body.splitlines():
             _console.print(f"    {ln}")
         _console.print()
+
+
+# --- skills subcommands -------------------------------------------------------
+
+
+@skills_app.command("list", help="List all discovered skills.")
+def skills_list():
+    from ..skills import SkillsRegistry, project_skills_dir, user_skills_dir
+
+    reg = SkillsRegistry.discover(project_root=Path.cwd())
+    skills = reg.all()
+
+    _console.print()
+    _console.print(f"  [dim]project skills dir:[/] {project_skills_dir()}")
+    _console.print(f"  [dim]user skills dir:[/] {user_skills_dir()}")
+    _console.print()
+
+    if not skills:
+        _console.print("  [yellow]·[/] no skills discovered.")
+        _console.print(
+            "  Create a skill at [bold].revio/skills/<name>/SKILL.md[/] "
+            "with YAML frontmatter (name, description, when_to_use)."
+        )
+        return
+
+    _console.print(f"  [bold]{len(skills)} skills[/] discovered:")
+    for s in skills:
+        source_tag = (
+            "[green][project][/]" if s.source == "project" else "[blue][user][/]"
+        )
+        _console.print(f"    {source_tag} [bold]{s.name}[/]: {s.description}")
+
+
+@skills_app.command("show", help="Print a skill's full body to stdout.")
+def skills_show(name: str = typer.Argument(..., help="Skill name.")):
+    from ..skills import SkillsRegistry
+
+    reg = SkillsRegistry.discover(project_root=Path.cwd())
+    skill = reg.get(name)
+    if skill is None:
+        _err_console.print(f"  ✗ no skill named [bold]{name}[/]")
+        raise typer.Exit(code=1)
+
+    _console.print(f"  [bold]{skill.name}[/]  [dim]({skill.source})[/]")
+    _console.print(f"  [dim]source:[/] {skill.body_path}")
+    _console.print(f"  [dim]description:[/] {skill.description}")
+    if skill.when_to_use:
+        _console.print(f"  [dim]when_to_use:[/] {skill.when_to_use}")
+
+    rules = skill.matches
+    rule_parts = []
+    if rules.extensions:
+        rule_parts.append(f"ext={rules.extensions}")
+    if rules.imports:
+        rule_parts.append(f"imports={rules.imports}")
+    if rules.frameworks:
+        rule_parts.append(f"frameworks={rules.frameworks}")
+    if rules.languages:
+        rule_parts.append(f"languages={rules.languages}")
+    if rules.filename_patterns:
+        rule_parts.append(f"filenames={rules.filename_patterns}")
+    if rule_parts:
+        _console.print(f"  [dim]matches:[/] {' '.join(rule_parts)}")
+
+    _console.print()
+    _console.print(skill.load_body())
+
+
+@skills_app.command("activated", help="Show which skills would auto-activate for the current dir.")
+def skills_activated():
+    from ..agent.tool_context import ToolContext
+
+    ctx = ToolContext(repo_root=Path.cwd(), profile_name="auto")
+    activations = ctx.activated_skills
+
+    if not activations:
+        _console.print("  [yellow]·[/] no skills auto-activate for this project")
+        return
+
+    _console.print(f"  [bold]{len(activations)} skills would auto-activate:[/]")
+    for act in activations:
+        _console.print(f"    [bold]{act.skill.name}[/] — matched: {', '.join(act.matched_rules)}")
 
 
 # --- main ---------------------------------------------------------------------

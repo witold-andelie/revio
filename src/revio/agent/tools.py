@@ -230,6 +230,46 @@ def report_finding(
 # --- search_guidelines --------------------------------------------------------
 
 
+# --- load_skill ---------------------------------------------------------------
+
+
+def make_load_skill_tool(ctx: ToolContext):
+    """Return the load_skill tool — agent fetches a skill's full body on demand.
+
+    The plan-stage system prompt lists every skill's NAME + DESCRIPTION but not
+    its body (Anthropic-style progressive disclosure). When the agent decides
+    a skill is relevant, it calls load_skill(name) to pull the full content.
+    """
+
+    @tool
+    def load_skill(name: str) -> str:
+        """Load the full content of a skill (procedural knowledge for a scenario).
+
+        Call this when the skill's catalog entry (in the system prompt) looks
+        relevant to what you're investigating. The full body contains examples,
+        anti-patterns, and concrete review checklists.
+
+        Args:
+            name: The skill identifier (from the catalog in the system prompt).
+
+        Returns:
+            The markdown body of the skill, or an error message.
+        """
+        skill = ctx.skills_registry.get(name)
+        if skill is None:
+            available = ", ".join(sorted(ctx.skills_registry.skills.keys())) or "(none)"
+            return (
+                f"Error: no skill named {name!r}. "
+                f"Available skills: {available}"
+            )
+        body = skill.load_body()
+        if not body.strip():
+            return f"Skill {name!r} has an empty body."
+        return f"# Skill: {name}\n## {skill.description}\n\n{body}"
+
+    return load_skill
+
+
 def make_search_guidelines_tool(ctx: ToolContext):
     """Build the search_guidelines tool bound to a session's RAG retriever.
 

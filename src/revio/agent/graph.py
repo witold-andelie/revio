@@ -21,6 +21,7 @@ from .state import AgentState
 from .tool_context import ToolContext
 from .tools import (
     make_list_files_tool,
+    make_load_skill_tool,
     make_read_file_tool,
     make_search_guidelines_tool,
     report_finding,
@@ -51,12 +52,15 @@ async def plan_node(state: AgentState, config) -> dict:
     # and then treat them as real evidence in later turns.
     plan_text = sanitize_plan_text(raw_plan)
 
+    # Build skills section for the system prompt (progressive disclosure)
+    skills_section = _build_skills_section(state)
+
     # Seed the messages list with system + initial human turn for react loop
     system = SYSTEM_PROMPT.format(
         mode=state.get("mode", "review"),
         repo_path=state.get("repo_path", "."),
         profile_name=state.get("profile_name", "auto"),
-        profile_hints=state.get("profile_hints", ""),
+        profile_hints=(state.get("profile_hints", "") + skills_section),
         budget_max=state.get("tool_calls_budget", 15),
     )
 
@@ -71,6 +75,47 @@ async def plan_node(state: AgentState, config) -> dict:
         "plan": plan_text,
         "messages": [SystemMessage(content=system), HumanMessage(content=initial_user)],
     }
+
+
+def _build_skills_section(state: AgentState) -> str:
+    """Assemble the Skills catalog + auto-activated bodies for the system prompt."""
+    try:
+        ctx = ToolContext(
+            repo_root=Path(state["repo_path"]),
+            profile_name=state.get("profile_name", "auto"),
+        )
+        all_skills = ctx.skills_registry.all()
+        if not all_skills:
+            return ""
+
+        activations = ctx.activated_skills
+        activated_names = {a.skill.name for a in activations}
+
+        parts: list[str] = ["\n\n## Skills available\n"]
+        parts.append(
+            "You can call `load_skill(name)` to expand any of these into the conversation. "
+            "Skills marked **[auto-loaded]** are already in your context below.\n"
+        )
+        for s in all_skills:
+            tag = " **[auto-loaded]**" if s.name in activated_names else ""
+            parts.append(f"- `{s.name}`{tag}: {s.description}")
+
+        if activations:
+            parts.append("\n\n## Auto-loaded skills\n")
+            for act in activations:
+                reasons = ", ".join(act.matched_rules)
+                body = act.skill.load_body().strip()
+                # Cap body size so prompt doesn't blow up
+                if len(body) > 2000:
+                    body = body[:2000] + "\n... (truncated; call load_skill to read the rest)"
+                parts.append(
+                    f"\n### {act.skill.name}\n*(activated because: {reasons})*\n\n{body}\n"
+                )
+
+        return "\n".join(parts)
+    except Exception as e:
+        logger.warning("skills section build failed: %s", e)
+        return ""
 
 
 # --- Node: react_loop ---------------------------------------------------------
@@ -89,7 +134,14 @@ async def react_node(state: AgentState, config) -> dict:
     list_files_tool = make_list_files_tool(repo_root)
     read_file_tool = make_read_file_tool(repo_root)
     search_guidelines_tool = make_search_guidelines_tool(ctx)
-    tools = [list_files_tool, read_file_tool, search_guidelines_tool, report_finding]
+    load_skill_tool = make_load_skill_tool(ctx)
+    tools = [
+        list_files_tool,
+        read_file_tool,
+        search_guidelines_tool,
+        load_skill_tool,
+        report_finding,
+    ]
 
     # Profile-specific tools (Layer 1 + Layer 2)
     if profile_name and profile_name != "auto":
@@ -103,6 +155,11 @@ async def react_node(state: AgentState, config) -> dict:
                 tools.extend(profile_tools)
         except Exception as e:
             logger.warning("failed to load profile tools (%s): %s", profile_name, e)
+
+    # MCP tools (from configured MCP servers, bridged in runner.run_agent)
+    mcp_tools = (config.get("configurable", {}) or {}).get("mcp_tools", []) if isinstance(config, dict) else []
+    if mcp_tools:
+        tools.extend(mcp_tools)
 
     tools_by_name = {t.name: t for t in tools}
 

@@ -78,6 +78,28 @@ class FixConfig(BaseModel):
     min_confidence_for_yes: float = Field(default=0.95, ge=0.0, le=1.0)
 
 
+class MCPServerSpec(BaseModel):
+    """One MCP server entry in the user's config."""
+
+    # stdio transport
+    command: str | None = None
+    args: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+    # sse/http transport
+    url: str | None = None
+    api_key_env: str | None = None
+    # connection timeout
+    timeout: float = Field(default=5.0, ge=0.5, le=60.0)
+    # disable without removing the entry
+    enabled: bool = True
+
+
+class MCPConfig(BaseModel):
+    """[mcp.servers.<name>] tables in config.toml."""
+
+    servers: dict[str, MCPServerSpec] = Field(default_factory=dict)
+
+
 class Config(BaseModel):
     """Aggregate config from all sources."""
 
@@ -86,6 +108,7 @@ class Config(BaseModel):
     profile: ProfileConfig = Field(default_factory=ProfileConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
     fix: FixConfig = Field(default_factory=FixConfig)
+    mcp: MCPConfig = Field(default_factory=MCPConfig)
 
 
 # --- File paths ----------------------------------------------------------------

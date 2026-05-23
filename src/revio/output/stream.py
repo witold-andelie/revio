@@ -74,6 +74,26 @@ class StreamRenderer:
         )
         c.print()
 
+    def _on_mcp_connected(self, p: dict) -> None:
+        servers = p.get("servers", []) or []
+        failures = p.get("failures", []) or []
+        if not servers:
+            return
+        self.console.print()
+        self.console.print("[bold]🔌 MCP servers[/]")
+        for s in servers:
+            if s.get("connected"):
+                self.console.print(
+                    f"  [green]✓[/] {s['name']} → {s.get('tool_count', 0)} tools"
+                )
+            else:
+                self.console.print(f"  [red]✗[/] {s['name']} (not connected)")
+        for f in failures:
+            self.console.print(
+                f"  [red]·[/] {f['name']}: [dim]{f.get('error', '?')}[/]"
+            )
+        self.console.print()
+
     def _on_auto_detect(self, p: dict) -> None:
         fp = p.get("fingerprint", {})
         suggested = fp.get("suggested_profile", "?")

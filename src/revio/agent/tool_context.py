@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from ..layers.parser.symbol_graph import SymbolGraph
     from ..layers.rag.retriever import GuidelineRetriever
     from ..layers.static.oxlint import OxlintRunner
+    from ..skills import SkillActivation, SkillsRegistry
 
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,8 @@ class ToolContext:
     _oxlint_unavailable: bool = field(default=False, init=False, repr=False)
     _rag_retriever: "GuidelineRetriever | None" = field(default=None, init=False, repr=False)
     _rag_unavailable: bool = field(default=False, init=False, repr=False)
+    _skills_registry: "SkillsRegistry | None" = field(default=None, init=False, repr=False)
+    _activated_skills: "list[SkillActivation] | None" = field(default=None, init=False, repr=False)
 
     # ---- Layer 1 ----
 
@@ -92,6 +95,42 @@ class ToolContext:
                 self._oxlint_unavailable = True
                 return None
         return self._oxlint_runner
+
+    # ---- Skills ----
+
+    @property
+    def skills_registry(self) -> "SkillsRegistry":
+        if self._skills_registry is None:
+            from ..skills import SkillsRegistry
+
+            self._skills_registry = SkillsRegistry.discover(project_root=self.repo_root)
+        return self._skills_registry
+
+    @property
+    def activated_skills(self) -> "list[SkillActivation]":
+        """Skills that auto-activated based on the project fingerprint."""
+        if self._activated_skills is not None:
+            return self._activated_skills
+
+        try:
+            from ..detect import detect_project
+
+            fp = detect_project(self.repo_root)
+            extensions = set(fp.extension_counts.keys())
+            languages = set(fp.languages)
+            frameworks = set(fp.frameworks)
+            filenames = [m for m in fp.markers]
+            self._activated_skills = self.skills_registry.activate_for(
+                extensions=extensions,
+                languages=languages,
+                frameworks=frameworks,
+                filenames=filenames,
+            )
+        except Exception as e:
+            logger.warning("skill activation failed: %s", e)
+            self._activated_skills = []
+
+        return self._activated_skills
 
     # ---- RAG ----
 
