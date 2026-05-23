@@ -26,7 +26,10 @@ if TYPE_CHECKING:
     from ..layers.rag.retriever import GuidelineRetriever
     from ..layers.static.bandit import BanditRunner
     from ..layers.static.clippy import ClippyRunner
+    from ..layers.static.cppcheck import CppcheckRunner
+    from ..layers.static.golangci_lint import GolangCILintRunner
     from ..layers.static.oxlint import OxlintRunner
+    from ..layers.static.spotbugs import SpotBugsRunner
     from ..skills import SkillActivation, SkillsRegistry
 
 
@@ -55,6 +58,12 @@ class ToolContext:
     _bandit_unavailable: bool = field(default=False, init=False, repr=False)
     _clippy_runner: "ClippyRunner | None" = field(default=None, init=False, repr=False)
     _clippy_unavailable: bool = field(default=False, init=False, repr=False)
+    _spotbugs_runner: "SpotBugsRunner | None" = field(default=None, init=False, repr=False)
+    _spotbugs_unavailable: bool = field(default=False, init=False, repr=False)
+    _golangci_runner: "GolangCILintRunner | None" = field(default=None, init=False, repr=False)
+    _golangci_unavailable: bool = field(default=False, init=False, repr=False)
+    _cppcheck_runner: "CppcheckRunner | None" = field(default=None, init=False, repr=False)
+    _cppcheck_unavailable: bool = field(default=False, init=False, repr=False)
     _rag_retriever: "GuidelineRetriever | None" = field(default=None, init=False, repr=False)
     _rag_unavailable: bool = field(default=False, init=False, repr=False)
     _skills_registry: "SkillsRegistry | None" = field(default=None, init=False, repr=False)
@@ -141,6 +150,51 @@ class ToolContext:
                 self._clippy_unavailable = True
                 return None
         return self._clippy_runner
+
+    @property
+    def spotbugs(self) -> "SpotBugsRunner | None":
+        if self._spotbugs_unavailable:
+            return None
+        if self._spotbugs_runner is None:
+            try:
+                from ..layers.static.spotbugs import SpotBugsRunner
+
+                self._spotbugs_runner = SpotBugsRunner()
+            except Exception as e:
+                logger.warning("spotbugs unavailable: %s", e)
+                self._spotbugs_unavailable = True
+                return None
+        return self._spotbugs_runner
+
+    @property
+    def golangci(self) -> "GolangCILintRunner | None":
+        if self._golangci_unavailable:
+            return None
+        if self._golangci_runner is None:
+            try:
+                from ..layers.static.golangci_lint import GolangCILintRunner
+
+                self._golangci_runner = GolangCILintRunner()
+            except Exception as e:
+                logger.warning("golangci-lint unavailable: %s", e)
+                self._golangci_unavailable = True
+                return None
+        return self._golangci_runner
+
+    @property
+    def cppcheck(self) -> "CppcheckRunner | None":
+        if self._cppcheck_unavailable:
+            return None
+        if self._cppcheck_runner is None:
+            try:
+                from ..layers.static.cppcheck import CppcheckRunner
+
+                self._cppcheck_runner = CppcheckRunner()
+            except Exception as e:
+                logger.warning("cppcheck unavailable: %s", e)
+                self._cppcheck_unavailable = True
+                return None
+        return self._cppcheck_runner
 
     # ---- Skills ----
 

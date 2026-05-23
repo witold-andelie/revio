@@ -73,21 +73,26 @@ _EXT_LANG: dict[str, str] = {
 }
 
 # Language → which profile should handle it.
-# Languages without a dedicated profile route to "generic" (Tree-sitter AST only).
-# Languages whose grammar isn't packaged at all stay "auto" (LLM-only review).
+# Each language gets the most-specific profile available:
+#   - Layer 2 (lint) dedicated:  js / python / rust / java / go / cpp
+#   - Generic (Tree-sitter AST):  ruby / php / lua / sql / julia / scala /
+#                                  kotlin / swift / shell / c_sharp
+#   - LLM-only (no grammar):      matlab / r / verilog / sas / cobol /
+#                                  solidity / zig / objective_c / dart
+#   - PLC (vendor parsers in M4): structured_text + vendor variants
 _LANG_PROFILE: dict[str, str] = {
-    # Dedicated profiles
+    # --- Layer 1 + Layer 2 (full tooling) ---
     "javascript": "js",
     "typescript": "js",
     "python": "python",
     "rust": "rust",
-    # Generic profile (Tree-sitter available, no Layer-2 linter wired)
-    "java": "generic",
+    "java": "java",
+    "go": "go",
+    "c": "cpp",       # cppcheck handles both C and C++
+    "cpp": "cpp",
+    # --- Generic profile (Tree-sitter AST only) ---
     "kotlin": "generic",
     "scala": "generic",
-    "go": "generic",
-    "c": "generic",
-    "cpp": "generic",
     "c_sharp": "generic",
     "ruby": "generic",
     "php": "generic",
@@ -96,15 +101,25 @@ _LANG_PROFILE: dict[str, str] = {
     "julia": "generic",
     "sql": "generic",
     "shell": "generic",
-    # PLC profile
+    # --- LLM-only profiles (no Tree-sitter grammar) ---
+    "matlab": "matlab",
+    "r": "r",
+    "verilog": "verilog",
+    "systemverilog": "verilog",
+    "vhdl": "verilog",
+    "sas": "sas",
+    "cobol": "cobol",
+    "solidity": "solidity",
+    "zig": "zig",
+    "objective_c": "objc",
+    "dart": "dart",
+    # --- PLC (vendor XML formats route to plc profile) ---
     "structured_text": "plc",
     "plc_rockwell": "plc",
     "plc_omron": "plc",
     "plc_siemens": "plc",
     "plc_beckhoff": "plc",
     "plc_codesys": "plc",
-    # Languages with no Tree-sitter grammar packaged → LLM-only review
-    # (matlab, r, sas, dart, cobol, solidity, verilog, zig, objective_c)
 }
 
 

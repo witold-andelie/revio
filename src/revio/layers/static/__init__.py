@@ -15,26 +15,39 @@ from .clippy import (
     ClippyNotInstalledError,
     ClippyRunner,
 )
+from .cppcheck import (
+    CppCheckError,
+    CppcheckNotInstalledError,
+    CppcheckRunner,
+)
+from .golangci_lint import (
+    GolangCILintNotInstalledError,
+    GolangCILintRunner,
+    GoLintIssue,
+)
 from .oxlint import (
     OxlintDiagnostic,
     OxlintNotInstalledError,
     OxlintResult,
     OxlintRunner,
 )
+from .spotbugs import (
+    SpotBugsBug,
+    SpotBugsNotInstalledError,
+    SpotBugsRunner,
+)
 
 __all__ = [
     # JS
-    "OxlintDiagnostic",
-    "OxlintNotInstalledError",
-    "OxlintResult",
-    "OxlintRunner",
+    "OxlintDiagnostic", "OxlintNotInstalledError", "OxlintResult", "OxlintRunner",
     # Python
-    "BanditNotInstalledError",
-    "BanditReport",
-    "BanditResult",
-    "BanditRunner",
+    "BanditNotInstalledError", "BanditReport", "BanditResult", "BanditRunner",
     # Rust
-    "ClippyDiagnostic",
-    "ClippyNotInstalledError",
-    "ClippyRunner",
+    "ClippyDiagnostic", "ClippyNotInstalledError", "ClippyRunner",
+    # Java
+    "SpotBugsBug", "SpotBugsNotInstalledError", "SpotBugsRunner",
+    # Go
+    "GolangCILintNotInstalledError", "GolangCILintRunner", "GoLintIssue",
+    # C/C++
+    "CppCheckError", "CppcheckNotInstalledError", "CppcheckRunner",
 ]

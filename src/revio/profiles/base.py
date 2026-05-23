@@ -54,7 +54,17 @@ def load_all_profiles() -> None:
     # Local imports to avoid circular deps at module-load time.
     # Each profile's import is wrapped in try/except so a missing optional
     # dependency (e.g. tree-sitter grammar package) doesn't crash startup.
-    for module_name in ("js", "plc", "python", "rust", "generic"):
+    for module_name in (
+        # Full Layer 1 + Layer 2 profiles
+        "js", "python", "rust", "java", "go", "cpp",
+        # Stub (M4 will fill PLC vendor parsers + rules)
+        "plc",
+        # Generic Tree-sitter fallback (Ruby/PHP/Lua/SQL/Julia/Scala/Kotlin/Swift/Shell/C#)
+        "generic",
+        # LLM-only fallback profiles (no Tree-sitter grammar packaged)
+        "matlab", "r", "verilog", "sas", "cobol", "solidity",
+        "zig", "objc", "dart",
+    ):
         try:
             __import__(f"revio.profiles.{module_name}")
         except (ImportError, ValueError):

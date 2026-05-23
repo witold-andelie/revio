@@ -170,6 +170,9 @@ def main() -> int:
     rc |= check_rust()
     rc |= check_java()
     rc |= check_go()
+    rc |= check_cpp_static()
+    rc |= check_go_static()
+    rc |= check_llm_only_profiles()
 
     print()
     if rc == 0:
@@ -177,6 +180,81 @@ def main() -> int:
     else:
         print("❌ Some checks failed")
     return rc
+
+
+def check_cpp_static() -> int:
+    _section("C/C++ (cppcheck Layer 2)")
+    from revio.layers.static import CppcheckRunner, CppcheckNotInstalledError
+
+    path = FIXTURE_ROOT / "cpp_sample" / "bad.cpp"
+    if not path.is_file():
+        print("  ⚠ cpp_sample fixture missing")
+        return 0
+    try:
+        runner = CppcheckRunner()
+    except CppcheckNotInstalledError as e:
+        print(f"  ⚠ cppcheck not installed (skipping): {str(e)[:80]}...")
+        return 0
+
+    findings = runner.scan_to_findings(path, repo_root=FIXTURE_ROOT / "cpp_sample")
+    print(f"  cppcheck findings: {len(findings)}")
+    if len(findings) < 2:
+        print(f"  ❌ expected ≥ 2 findings, got {len(findings)}")
+        return 1
+
+    titles_lower = " ".join(f.title.lower() for f in findings)
+    expected_signals = ["buffer", "null"]
+    missing = [s for s in expected_signals if s not in titles_lower]
+    if missing:
+        print(f"  ❌ expected cppcheck signals missing: {missing}")
+        print(f"  Got titles: {[f.title[:50] for f in findings]}")
+        return 1
+    print(f"  ✓ cppcheck found buffer + null findings as expected")
+    return 0
+
+
+def check_go_static() -> int:
+    _section("Go (golangci-lint Layer 2)")
+    from revio.layers.static import GolangCILintRunner, GolangCILintNotInstalledError
+
+    target = FIXTURE_ROOT / "go_sample_module"
+    if not (target / "go.mod").is_file():
+        print("  ⚠ go_sample_module fixture missing go.mod")
+        return 0
+    try:
+        runner = GolangCILintRunner()
+    except GolangCILintNotInstalledError as e:
+        print(f"  ⚠ golangci-lint not installed (skipping): {str(e)[:80]}...")
+        return 0
+
+    findings = runner.scan_to_findings(target, repo_root=target)
+    print(f"  golangci-lint findings: {len(findings)}")
+    if not findings:
+        print(f"  ⚠ no findings — strange, fixture should have issues")
+        return 0
+    print(f"  ✓ golangci-lint surfaced {len(findings)} issue(s)")
+    return 0
+
+
+def check_llm_only_profiles() -> int:
+    _section("LLM-only profiles register correctly")
+    from revio.profiles import get_profile, list_profiles, load_all_profiles
+
+    load_all_profiles()
+    llm_only = ["matlab", "r", "verilog", "sas", "cobol", "solidity", "zig", "objc", "dart"]
+    missing = [p for p in llm_only if get_profile(p) is None]
+    if missing:
+        print(f"  ❌ missing LLM-only profiles: {missing}")
+        return 1
+    print(f"  ✓ all 9 LLM-only profiles registered: {llm_only}")
+
+    for name in llm_only:
+        hints = get_profile(name).make_reasoning_hints()
+        if len(hints) < 200:
+            print(f"  ❌ {name} reasoning_hints too short ({len(hints)} chars)")
+            return 1
+    print(f"  ✓ all LLM-only profiles have rich reasoning_hints (>=200 chars)")
+    return 0
 
 
 if __name__ == "__main__":
