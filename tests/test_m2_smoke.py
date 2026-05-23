@@ -250,9 +250,12 @@ def main():
         print(f"\n❌ MISSING tool invocations: {missing}")
         return 1
 
-    # Grounded findings should survive (server.js + utils.js were read)
-    if len(report.findings) != 2:
-        print(f"\n❌ Expected 2 grounded findings, got {len(report.findings)}")
+    # Grounded findings should survive (server.js + utils.js were read).
+    # Note: as of the M3 auto-emit refactor, run_oxlint also auto-records its
+    # own findings (eval, no-unused-vars), so the count is ≥ 2 (LLM-emitted)
+    # plus however many oxlint surfaces. We assert the SET of files instead.
+    if len(report.findings) < 2:
+        print(f"\n❌ Expected ≥ 2 grounded findings, got {len(report.findings)}")
         for f in report.findings:
             print(f"   · {f.title} → {f.file_path}:{f.line_start}")
         return 1
@@ -262,9 +265,20 @@ def main():
         print("\n❌ HALLUCINATED finding (src/auth.js) was not dropped")
         return 1
 
-    expected_paths = {"src/server.js", "src/utils.js"}
-    if real_paths != expected_paths:
-        print(f"\n❌ Finding paths {real_paths} != expected {expected_paths}")
+    # Every finding must reference a file that was actually read (server.js
+    # and utils.js are the only files the mock reads).
+    expected_files = {"src/server.js", "src/utils.js"}
+    if not real_paths.issubset(expected_files):
+        print(f"\n❌ Findings reference unread files: {real_paths - expected_files}")
+        return 1
+
+    # Verify the two LLM-emitted findings are present
+    llm_titles = {f.title for f in report.findings if f.detected_by == "agent"}
+    if not any("SQL injection" in t for t in llm_titles):
+        print(f"\n❌ Expected SQL injection finding from LLM, got: {llm_titles}")
+        return 1
+    if not any("Duplicate function" in t for t in llm_titles):
+        print(f"\n❌ Expected duplicate function finding from LLM, got: {llm_titles}")
         return 1
 
     # Grounding validator should have dropped the hallucinated one

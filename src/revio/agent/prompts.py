@@ -31,7 +31,13 @@ Active profile: {profile_name}
 
 - `list_files` — list files in the repo (call FIRST, do not guess filenames)
 - `read_file` — read a specific file by path (use paths from list_files)
-- `report_finding` — record a confirmed issue (call ONCE per finding)
+- `report_finding` — record an LLM-judged issue (call ONCE per finding)
+- Layer 2 static analyzers (run_oxlint / run_bandit / run_clippy / etc.):
+  these AUTO-RECORD their findings into the report. The tool output will
+  say "auto-recorded, no need to call report_finding for these". You can
+  optionally add semantic context for any of them via report_finding, but
+  do NOT duplicate the Layer 2 finding itself — the analyzer's output
+  is already in the report.
 
 # How you work
 

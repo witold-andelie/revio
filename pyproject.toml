@@ -58,8 +58,33 @@ plc = [
 python = [
     "tree-sitter>=0.23.0",
     "tree-sitter-python>=0.23.0",
+    "bandit>=1.7.0",
 ]
-all = ["revio[js,plc,python]"]
+# Generic multi-language support (Tree-sitter grammars from v1).
+# Not all packages exist on PyPI / install cleanly on every platform —
+# language_support.py degrades gracefully when a grammar is unavailable.
+languages = [
+    "tree-sitter>=0.23.0",
+    "tree-sitter-python>=0.23.0",
+    "tree-sitter-javascript>=0.23.0",
+    "tree-sitter-typescript>=0.23.0",
+    "tree-sitter-c-sharp>=0.23.0",
+    "tree-sitter-java>=0.23.0",
+    "tree-sitter-go>=0.23.0",
+    "tree-sitter-rust>=0.23.0",
+    "tree-sitter-c>=0.23.0",
+    "tree-sitter-cpp>=0.23.0",
+    "tree-sitter-php>=0.23.0",
+    "tree-sitter-ruby>=0.23.0",
+    "tree-sitter-bash>=0.23.0",
+    "tree-sitter-lua>=0.5.0",
+    "tree-sitter-sql>=0.3.0",
+    "tree-sitter-julia>=0.23.0",
+    "tree-sitter-scala>=0.23.0",
+    "tree-sitter-kotlin>=1.0.0",
+    "tree-sitter-swift>=0.7.0",
+]
+all = ["revio[js,plc,python,languages]"]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",

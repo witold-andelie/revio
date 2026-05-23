@@ -26,33 +26,85 @@ _IGNORE_DIRS = {
     ".idea", ".vscode", ".gradle", ".terraform",
 }
 
-# Extension → language label
+# Extension → language label. Mirrors v1's coverage (28 extensions) plus
+# the JS-family ones we added in M2 for completeness.
 _EXT_LANG: dict[str, str] = {
     # JS family
-    ".js": "javascript", ".jsx": "javascript",
+    ".js": "javascript", ".jsx": "javascript", ".mjs": "javascript", ".cjs": "javascript",
     ".ts": "typescript", ".tsx": "typescript",
-    ".mjs": "javascript", ".cjs": "javascript",
     # Python
-    ".py": "python",
+    ".py": "python", ".pyi": "python",
+    # JVM family
+    ".java": "java",
+    ".kt": "kotlin", ".kts": "kotlin",
+    ".scala": "scala", ".sc": "scala",
+    # Systems languages
+    ".go": "go",
+    ".rs": "rust",
+    ".c": "c", ".h": "c",
+    ".cpp": "cpp", ".cc": "cpp", ".cxx": "cpp", ".hpp": "cpp", ".hxx": "cpp",
+    ".cs": "c_sharp",
+    # Dynamic
+    ".rb": "ruby",
+    ".php": "php",
+    ".swift": "swift",
+    ".lua": "lua",
+    ".jl": "julia",
+    ".dart": "dart",
+    # SQL / Shell
+    ".sql": "sql",
+    ".sh": "shell", ".bash": "shell", ".zsh": "shell",
+    # Niche / scientific
+    ".m": "matlab",
+    ".r": "r",
+    ".sas": "sas",
+    # Hardware / smart-contract
+    ".sol": "solidity",
+    ".v": "verilog", ".vh": "verilog", ".sv": "verilog", ".svh": "verilog",
+    ".zig": "zig",
+    ".mm": "objective_c",
+    # COBOL
+    ".cob": "cobol", ".cbl": "cobol", ".cpy": "cobol",
     # PLC (text)
     ".st": "structured_text", ".iecst": "structured_text",
     # PLC (vendor XML — needs content inspection to confirm)
     ".l5x": "plc_rockwell",
     ".smc2": "plc_omron",
-    # Others (for future profiles, currently unmapped to a profile)
-    ".java": "java", ".kt": "kotlin",
-    ".go": "go", ".rs": "rust",
-    ".c": "c", ".h": "c", ".cpp": "cpp", ".hpp": "cpp",
-    ".rb": "ruby", ".php": "php",
 }
 
-# Language → which profile should handle it
+# Language → which profile should handle it.
+# Languages without a dedicated profile route to "generic" (Tree-sitter AST only).
+# Languages whose grammar isn't packaged at all stay "auto" (LLM-only review).
 _LANG_PROFILE: dict[str, str] = {
-    "javascript": "js", "typescript": "js",
+    # Dedicated profiles
+    "javascript": "js",
+    "typescript": "js",
     "python": "python",
+    "rust": "rust",
+    # Generic profile (Tree-sitter available, no Layer-2 linter wired)
+    "java": "generic",
+    "kotlin": "generic",
+    "scala": "generic",
+    "go": "generic",
+    "c": "generic",
+    "cpp": "generic",
+    "c_sharp": "generic",
+    "ruby": "generic",
+    "php": "generic",
+    "swift": "generic",
+    "lua": "generic",
+    "julia": "generic",
+    "sql": "generic",
+    "shell": "generic",
+    # PLC profile
     "structured_text": "plc",
-    "plc_rockwell": "plc", "plc_omron": "plc", "plc_siemens": "plc",
-    "plc_beckhoff": "plc", "plc_codesys": "plc",
+    "plc_rockwell": "plc",
+    "plc_omron": "plc",
+    "plc_siemens": "plc",
+    "plc_beckhoff": "plc",
+    "plc_codesys": "plc",
+    # Languages with no Tree-sitter grammar packaged → LLM-only review
+    # (matlab, r, sas, dart, cobol, solidity, verilog, zig, objective_c)
 }
 
 

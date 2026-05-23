@@ -288,6 +288,14 @@ async def react_node(state: AgentState, config) -> dict:
                     ToolMessage(content=str(result), tool_call_id=tcid)
                 )
 
+            # Drain any static-analyzer auto-emit buffer (Layer 2 tools push
+            # their Finding objects directly to ctx.pending_findings — that
+            # way they're guaranteed to appear in the report even if the LLM
+            # forgets to call report_finding for them).
+            if ctx.pending_findings:
+                new_findings.extend(ctx.pending_findings)
+                ctx.pending_findings.clear()
+
         # After processing the WHOLE batch, decide whether to continue.
         # No mid-batch break — that would leave tool_calls without responses.
         if used >= budget_max:

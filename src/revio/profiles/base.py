@@ -51,19 +51,16 @@ def load_all_profiles() -> None:
     Called once at startup. Safe to call multiple times (decorator raises on
     duplicate, so we swallow that). New profiles just add an `import` line.
     """
-    # Local imports to avoid circular deps at module-load time
-    try:
-        from . import js  # noqa: F401
-    except ImportError:
-        pass
-    try:
-        from . import plc  # noqa: F401
-    except ImportError:
-        pass
-    try:
-        from . import python  # noqa: F401
-    except ImportError:
-        pass
+    # Local imports to avoid circular deps at module-load time.
+    # Each profile's import is wrapped in try/except so a missing optional
+    # dependency (e.g. tree-sitter grammar package) doesn't crash startup.
+    for module_name in ("js", "plc", "python", "rust", "generic"):
+        try:
+            __import__(f"revio.profiles.{module_name}")
+        except (ImportError, ValueError):
+            # ValueError catches the "already registered" raise when this
+            # function is called more than once in the same process.
+            pass
 
 
 # --- Base class ----------------------------------------------------------------

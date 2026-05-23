@@ -54,10 +54,15 @@ def make_run_oxlint_tool(ctx: ToolContext):
         if not findings:
             return f"(no oxlint issues in {relative_path})"
 
+        # Auto-emit: push to ctx so react_node merges into state. The LLM
+        # doesn't need to re-record these via report_finding.
+        ctx.pending_findings.extend(findings)
+
         # Cap output to keep prompt budget reasonable
         max_show = 50
         lines = [
-            f"oxlint findings in {relative_path} ({len(findings)} total):",
+            f"oxlint findings in {relative_path} ({len(findings)} total — "
+            f"auto-recorded, no need to call report_finding for these):",
         ]
         for f in findings[:max_show]:
             rule = f.evidence[0].source if f.evidence else "?"
