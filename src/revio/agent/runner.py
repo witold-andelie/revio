@@ -200,6 +200,29 @@ async def run_agent(
 
     # Build the final report
     report = _build_report(final_state, config)
+
+    # Cross-session findings comparison + persistence
+    try:
+        from .findings_store import FindingsStore
+
+        findings_db = ckpt_dir / f"{repo_hash}_findings.sqlite"
+        store = FindingsStore(findings_db)
+        comparisons = store.compare(report.findings, repo_root=repo_path_resolved)
+        new_count = sum(1 for c in comparisons if c.status == "new")
+        still_count = sum(1 for c in comparisons if c.status == "still_present")
+        fixed_count = sum(1 for c in comparisons if c.status == "maybe_fixed")
+        # Record this run's findings AFTER comparing
+        store.record_run(report.findings, repo_root=repo_path_resolved)
+
+        on_event("findings_compared", {
+            "new": new_count,
+            "still_present": still_count,
+            "maybe_fixed": fixed_count,
+            "total_history": store.count(),
+        })
+    except Exception as e:
+        logger.warning("findings history skipped: %s", e)
+
     on_event("session_end", {"report": report.model_dump()})
     return report
 

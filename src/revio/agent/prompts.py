@@ -25,6 +25,7 @@ Repository: {repo_path}
 Active profile: {profile_name}
 
 {profile_hints}
+{mode_instructions}
 
 # Tools available to you
 
@@ -122,6 +123,68 @@ Important reminders:
 - Every finding must cite content from a successful tool call.
 
 Begin executing your plan now."""
+
+
+# --- Mode-specific instructions ----------------------------------------------
+#
+# Injected into the SYSTEM_PROMPT's {mode_instructions} slot at plan time so
+# each mode tells the agent what to prioritize without us writing 3 separate
+# system prompts.
+
+
+MODE_INSTRUCTIONS = {
+    "review": """
+# Mode focus: REVIEW (diff / commit)
+
+You are reviewing a SPECIFIC CHANGE, not the whole repo. Focus tight:
+- What did this diff introduce, modify, or break?
+- Are there new attack surfaces, regressions, or convention violations?
+- Skim files NOT touched by the diff — only re-read them if they shed light
+  on something the diff changed.
+
+Prioritize finding categories in this order:
+  1. security  2. potential_bug  3. architecture  4. convention/style
+
+Budget: keep call count modest. A small diff rarely needs 15+ tool calls.
+""",
+
+    "audit": """
+# Mode focus: AUDIT (full-repo security scan)
+
+You are auditing the ENTIRE repository for security and quality issues.
+Cast a wide net:
+- Walk through every source file at least once via read_file
+- Use run_oxlint early to surface deterministic issues cheaply
+- For PLC profile: invoke vendor parsers + rules; for JS: oxlint + AST tools
+
+Prioritize finding categories in this order:
+  1. security (CRITICAL/ERROR)  2. potential_bug  3. performance
+  4. architecture/redundancy  5. style (LOW priority — only if obvious)
+
+Budget: use most of it. Aim for thorough coverage.
+""",
+
+    "dedup": """
+# Mode focus: DEDUP (AI-generated redundancy detection)
+
+You are scanning for SEMANTIC DUPLICATES and structural redundancy that
+typically result from LLM-generated code:
+- Functions with same behavior but different names
+- Wrapper functions used in only one place (no-op abstractions)
+- Dead code (declared but never called)
+- Repeated template patterns that should be one helper
+
+START by calling `find_duplicate_groups` and `find_uncalled_functions`
+(JS profile) — they give you candidate sets directly. Then read each
+candidate, verify semantic equivalence, and report.
+
+Prioritize finding categories: redundancy is your TOP focus. De-emphasize
+security/style findings — they're audit's job, not yours.
+
+Budget: most of it on candidate-verification (read pairs of functions and
+compare them).
+""",
+}
 
 
 REFLECT_PROMPT = """Investigation complete.

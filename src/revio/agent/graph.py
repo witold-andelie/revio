@@ -16,7 +16,13 @@ from ..config import Config
 from ..output.models import Finding
 from .grounding import collect_tool_facts, sanitize_plan_text, validate_findings
 from .llm import make_llm
-from .prompts import PLAN_PROMPT, REACT_INTRO_PROMPT, REFLECT_PROMPT, SYSTEM_PROMPT
+from .prompts import (
+    MODE_INSTRUCTIONS,
+    PLAN_PROMPT,
+    REACT_INTRO_PROMPT,
+    REFLECT_PROMPT,
+    SYSTEM_PROMPT,
+)
 from .state import AgentState
 from .tool_context import ToolContext
 from .tools import (
@@ -56,11 +62,13 @@ async def plan_node(state: AgentState, config) -> dict:
     skills_section = _build_skills_section(state)
 
     # Seed the messages list with system + initial human turn for react loop
+    mode = state.get("mode", "review")
     system = SYSTEM_PROMPT.format(
-        mode=state.get("mode", "review"),
+        mode=mode,
         repo_path=state.get("repo_path", "."),
         profile_name=state.get("profile_name", "auto"),
         profile_hints=(state.get("profile_hints", "") + skills_section),
+        mode_instructions=MODE_INSTRUCTIONS.get(mode, ""),
         budget_max=state.get("tool_calls_budget", 15),
     )
 
@@ -118,6 +126,34 @@ def _build_skills_section(state: AgentState) -> str:
         return ""
 
 
+# --- Mode tool filtering ------------------------------------------------------
+
+
+# Tools that should NEVER be exposed in a given mode.
+# (Don't strip universal tools like list_files / read_file / report_finding —
+#  every mode needs those. We only suppress mode-irrelevant specializations.)
+_MODE_TOOL_BLACKLIST: dict[str, set[str]] = {
+    "review": {
+        # Cross-repo concerns rarely matter for a focused diff review.
+        "find_uncalled_functions",
+        "find_duplicate_groups",
+        "find_similar_functions",
+    },
+    "audit": set(),  # full toolbox
+    "dedup": {
+        # Dedup focuses on structure, not security/style linting.
+        "run_oxlint",
+    },
+}
+
+
+def _filter_tools_for_mode(tools: list, mode: str) -> list:
+    blacklist = _MODE_TOOL_BLACKLIST.get(mode, set())
+    if not blacklist:
+        return tools
+    return [t for t in tools if t.name not in blacklist]
+
+
 # --- Node: react_loop ---------------------------------------------------------
 
 
@@ -160,6 +196,11 @@ async def react_node(state: AgentState, config) -> dict:
     mcp_tools = (config.get("configurable", {}) or {}).get("mcp_tools", []) if isinstance(config, dict) else []
     if mcp_tools:
         tools.extend(mcp_tools)
+
+    # Mode-specific tool filtering — review/dedup get a leaner tool set,
+    # audit gets everything.
+    mode = state.get("mode", "review")
+    tools = _filter_tools_for_mode(tools, mode)
 
     tools_by_name = {t.name: t for t in tools}
 

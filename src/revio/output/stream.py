@@ -74,6 +74,23 @@ class StreamRenderer:
         )
         c.print()
 
+    def _on_findings_compared(self, p: dict) -> None:
+        new = p.get("new", 0)
+        still = p.get("still_present", 0)
+        fixed = p.get("maybe_fixed", 0)
+        total = p.get("total_history", 0)
+        if new == 0 and still == 0 and fixed == 0:
+            return
+        self.console.print()
+        self.console.rule("[bold]🕒 Cross-run comparison[/]", style="cyan")
+        if new:
+            self.console.print(f"  [bold]🆕 New since last run:[/]   {new}")
+        if still:
+            self.console.print(f"  [yellow]📌 Still present:[/]       {still}")
+        if fixed:
+            self.console.print(f"  [green]✓ Maybe fixed:[/]         {fixed}")
+        self.console.print(f"  [dim](history has {total} unique findings tracked)[/]")
+
     def _on_mcp_connected(self, p: dict) -> None:
         servers = p.get("servers", []) or []
         failures = p.get("failures", []) or []
