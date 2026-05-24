@@ -32,7 +32,19 @@ dependencies = [
     "tenacity>=8.2.0",
     # Checkpointing
     "langgraph-checkpoint-sqlite>=2.0.0",
-    # RAG (M3)
+    # Skills (M3)
+    "pyyaml>=6.0.0",
+    # MCP client (M3)
+    "mcp>=1.0.0",
+    # SSL trust on macOS / minimal-Python boxes (used by /v1/models discovery)
+    "certifi>=2024.1.1",
+]
+
+[project.optional-dependencies]
+# RAG over your coding guidelines. Heavy (~1 GB: torch + sentence-transformers
+# + chromadb). Skip this extra if you don't index guidelines — RAG search
+# will be a no-op but the rest of revio is unaffected.
+rag = [
     "chromadb>=0.5.0",
     "sentence-transformers>=3.0.0",
     "langchain-huggingface>=0.1.0",
@@ -40,13 +52,7 @@ dependencies = [
     "python-docx>=1.1.0",
     "langchain-community>=0.3.0",
     "langchain-chroma>=0.2.0",
-    # Skills (M3)
-    "pyyaml>=6.0.0",
-    # MCP client (M3)
-    "mcp>=1.0.0",
 ]
-
-[project.optional-dependencies]
 js = [
     "tree-sitter>=0.23.0",
     "tree-sitter-javascript>=0.23.0",
@@ -85,7 +91,7 @@ languages = [
     "tree-sitter-swift>=0.7.0",
     "tree-sitter-verilog>=1.0.0",
 ]
-all = ["revio[js,plc,python,languages]"]
+all = ["revio[js,plc,python,languages,rag]"]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",

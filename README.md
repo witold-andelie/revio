@@ -50,14 +50,51 @@ curl -sSL https://raw.githubusercontent.com/witold-andelie/revio/main/scripts/in
 iwr https://raw.githubusercontent.com/witold-andelie/revio/main/scripts/install.ps1 | iex
 ```
 
-What the installer does:
-1. Verifies Python ≥ 3.11 (offers to install via `winget` on Windows if missing)
-2. Clones the repo to `~/.local/share/revio` (macOS / Linux) or `%LOCALAPPDATA%\revio` (Windows)
-3. Creates a venv inside that directory and pip-installs `revio` with all extras
-4. Installs **oxlint / cppcheck / golangci-lint** via your OS package manager if available (graceful skip otherwise — revio falls back to AST + LLM)
-5. Adds a `revio` launcher to `~/.local/bin` (macOS / Linux) or `%LOCALAPPDATA%\revio\bin` on PATH (Windows)
+The installer walks 7 stages, **each with progress visible**, and asks before
+doing anything that takes more than a few seconds:
 
-Re-run the same command anytime to update to the latest `main`.
+1. Verifies Python ≥ 3.11 (offers to install via `winget` on Windows if missing)
+2. Verifies git
+3. **Asks where to install** — defaults to `~/.local/share/revio` (macOS / Linux) or `%LOCALAPPDATA%\revio` (Windows); if you're on a different drive than the default (e.g. you `cd D:\tools` first on Windows), the prompt offers to install there instead
+4. Clones the repo (with `git --progress`)
+5. Installs `revio` core + Tree-sitter grammars (~150 MB)
+6. **Asks** which optional pieces to install:
+   - **RAG support** (~1 GB: torch + sentence-transformers) — opt-in; skip if you don't index company guidelines
+   - **Per-language static analyzers** — `[A]` all / `[C]` pick per language / `[N]` none. *Selecting the languages you actually use significantly improves revio's accuracy on those languages.*
+7. Adds a `revio` launcher to `~/.local/bin` (macOS / Linux) or `%LOCALAPPDATA%\revio\bin` on PATH (Windows)
+
+After install, **open a new terminal** so the updated PATH loads, then `cd`
+into any code folder and run `revio` — works just like the `claude` command.
+
+Re-run the same install command anytime to update to the latest `main`.
+
+### Disk footprint
+
+| What | Size |
+|---|---|
+| Core (agent runtime + CLI + Tree-sitter grammars + 13 profiles) | **~150 MB** |
+| + RAG (chromadb + sentence-transformers + torch) | +~1 GB |
+| + HuggingFace embedding model (first RAG use) | +~80 MB |
+| Per-language analyzer binaries (oxlint / cppcheck / shellcheck / etc.) | ~1-30 MB each |
+
+A typical install with RAG off and only the user's daily languages
+selected sits around **180-250 MB**. With everything on it's ~1.5 GB.
+
+### Uninstall
+
+```bash
+# macOS / Linux
+curl -sSL https://raw.githubusercontent.com/witold-andelie/revio/main/scripts/uninstall.sh | bash
+
+# Windows
+iwr https://raw.githubusercontent.com/witold-andelie/revio/main/scripts/uninstall.ps1 | iex
+```
+
+The uninstaller asks separately whether to also remove your cache
+(`~/.cache/revio` — fix history, findings DB, RAG index) and config
+(`~/.config/revio` — `config.toml` + custom skills). System-wide analyzers
+installed via brew/winget/scoop are NOT touched — they may be useful to
+other tools.
 
 ### Manual install (any OS)
 

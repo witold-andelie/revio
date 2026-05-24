@@ -1,170 +1,342 @@
-# revio — one-click installer for Windows (PowerShell).
+# revio - one-click installer for Windows (PowerShell).
 #
 # Usage:
 #   iwr https://raw.githubusercontent.com/witold-andelie/revio/main/scripts/install.ps1 | iex
 #
-# What it does:
-#   1. Checks Python >= 3.11 (offers winget install if missing)
-#   2. Clones (or pulls) the repo to %LOCALAPPDATA%\revio
-#   3. Creates a venv inside that directory
-#   4. Installs revio + recommended language extras via pip
-#   5. (Optional) installs static analyzers via winget / scoop / npm when present
-#   6. Creates a launcher at %LOCALAPPDATA%\revio\bin\revio.cmd and adds it to PATH
-#   7. Prompts you to run `revio` (which triggers the setup wizard)
+# What it does (7 stages, each with progress visible):
+#   [1/7] Locates Python >= 3.11 (offers winget install if missing)
+#   [2/7] Locates git
+#   [3/7] Asks for install location  (defaults to %LOCALAPPDATA%\revio
+#                                     but offers other drives if larger)
+#   [4/7] Clones the repo
+#   [5/7] Creates venv + installs revio core (~150 MB)
+#   [6/7] Optional: installs RAG extras (heavy ~1 GB) and per-language
+#         static analyzers (asks BEFORE downloading anything)
+#   [7/7] Adds launcher to PATH
 
 $ErrorActionPreference = 'Stop'
 
-$RepoUrl     = 'https://github.com/witold-andelie/revio.git'
-$InstallDir  = if ($env:REVIO_HOME)    { $env:REVIO_HOME }    else { Join-Path $env:LOCALAPPDATA 'revio' }
-$BinDir      = Join-Path $InstallDir 'bin'
-$PyMinMajor  = 3
-$PyMinMinor  = 11
+# Force UTF-8 output - Windows codepages render Unicode markers as '???'.
+try {
+    [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+    $OutputEncoding            = [System.Text.UTF8Encoding]::new()
+} catch { }
 
-function Step($m)    { Write-Host "▶ $m" -ForegroundColor Cyan }
-function Ok($m)      { Write-Host "  ✓ $m" -ForegroundColor Green }
-function Warn($m)    { Write-Host "  ! $m" -ForegroundColor Yellow }
-function Die($m)     { Write-Host "  ✗ $m" -ForegroundColor Red; exit 1 }
+$RepoUrl       = 'https://github.com/witold-andelie/revio.git'
+$DefaultDir    = if ($env:REVIO_HOME) { $env:REVIO_HOME } else { Join-Path $env:LOCALAPPDATA 'revio' }
+$PyMinMajor    = 3
+$PyMinMinor    = 11
+$ScriptStart   = Get-Date
 
-# --- Python ------------------------------------------------------------------
+# --- output helpers (ASCII-safe markers) ------------------------------------
 
-Step "Looking for Python $PyMinMajor.$PyMinMinor+..."
-$python = $null
-foreach ($candidate in @('python3.13', 'python3.12', 'python3.11', 'python', 'py')) {
-    $cmd = Get-Command $candidate -ErrorAction SilentlyContinue
-    if (-not $cmd) { continue }
-    try {
-        $ok = & $candidate -c "import sys; sys.exit(0 if sys.version_info >= ($PyMinMajor,$PyMinMinor) else 1)"
-        if ($LASTEXITCODE -eq 0) { $python = $candidate; break }
-    } catch { }
+$script:CurStep = 0
+$script:TotalSteps = 7
+function Stage($title) {
+    $script:CurStep++
+    $elapsed = '{0:mm\:ss}' -f ((Get-Date) - $ScriptStart)
+    Write-Host ""
+    Write-Host "[$script:CurStep/$script:TotalSteps] $title  " -ForegroundColor Cyan -NoNewline
+    Write-Host "(t+$elapsed)" -ForegroundColor DarkGray
+}
+function Info($m)    { Write-Host "    $m" }
+function Ok($m)      { Write-Host "    [OK]   $m" -ForegroundColor Green }
+function Warn($m)    { Write-Host "    [WARN] $m" -ForegroundColor Yellow }
+function Die($m)     { Write-Host "    [FAIL] $m" -ForegroundColor Red; exit 1 }
+
+# Run a native command without letting stderr trip ErrorActionPreference=Stop.
+function Invoke-Probe {
+    param([scriptblock]$Body)
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { $null = & $Body 2>&1 | Out-Null; return $LASTEXITCODE }
+    catch { return 1 }
+    finally { $ErrorActionPreference = $prev }
 }
 
-if (-not $python) {
-    Warn "No suitable Python found."
-    if (Get-Command winget -ErrorAction SilentlyContinue) {
-        Step "Attempting to install Python via winget..."
-        winget install --silent --id Python.Python.3.12 --accept-source-agreements --accept-package-agreements
-        $python = 'python'
-    } else {
-        Die "Install Python $PyMinMajor.$PyMinMinor+ from https://www.python.org/downloads/ and re-run."
+function Ask-YesNo($prompt, $default = 'n') {
+    $hint = if ($default -eq 'y') { '[Y/n]' } else { '[y/N]' }
+    while ($true) {
+        $r = (Read-Host "$prompt $hint").Trim().ToLower()
+        if ($r -eq '') { $r = $default }
+        if ($r -in 'y','yes') { return $true }
+        if ($r -in 'n','no')  { return $false }
+        Write-Host "    please answer y or n" -ForegroundColor Yellow
     }
+}
+
+function Get-DriveFreeGB($driveLetter) {
+    try {
+        $d = Get-PSDrive -Name $driveLetter -ErrorAction Stop
+        return [math]::Round($d.Free / 1GB, 1)
+    } catch { return 'unknown' }
+}
+
+# === Banner =================================================================
+
+Write-Host ""
+Write-Host "revio installer" -ForegroundColor Cyan -NoNewline
+Write-Host "  -  agentic code review CLI" -ForegroundColor DarkGray
+Write-Host "Footprint: ~150 MB core, +1 GB if you opt into RAG (we'll ask)."
+Write-Host ""
+
+# === [1/7] Python ==========================================================
+
+Stage "Checking Python $PyMinMajor.$PyMinMinor+"
+$python = $null
+foreach ($cand in 'python3.13','python3.12','python3.11','python','py') {
+    if (-not (Get-Command $cand -ErrorAction SilentlyContinue)) { continue }
+    if ((Invoke-Probe { & $cand -c "import sys;sys.exit(0 if sys.version_info >= ($PyMinMajor,$PyMinMinor) else 1)" }) -eq 0) {
+        $python = $cand; break
+    }
+}
+if (-not $python) {
+    Warn "No Python >= $PyMinMajor.$PyMinMinor found."
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        if (Ask-YesNo "Install Python 3.12 via winget now?" 'y') {
+            winget install --silent --id Python.Python.3.12 --accept-source-agreements --accept-package-agreements
+            $python = 'python'
+        } else { Die "Install Python from https://www.python.org/downloads/ and re-run." }
+    } else { Die "winget not available. Install Python from https://www.python.org/downloads/ and re-run." }
 }
 $pyver = & $python -c "import sys; print('%d.%d.%d' % sys.version_info[:3])"
-Ok "using $python ($pyver)"
+Ok "$python ($pyver)"
 
-# --- git ---------------------------------------------------------------------
+# === [2/7] Git ==============================================================
 
-Step "Checking git..."
+Stage "Checking git"
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     if (Get-Command winget -ErrorAction SilentlyContinue) {
-        Step "Installing git via winget..."
-        winget install --silent --id Git.Git --accept-source-agreements --accept-package-agreements
-    } else {
-        Die "git not found. Install from https://git-scm.com/download/win and re-run."
-    }
+        if (Ask-YesNo "Install git via winget?" 'y') {
+            winget install --silent --id Git.Git --accept-source-agreements --accept-package-agreements
+        } else { Die "git required. Install from https://git-scm.com/download/win" }
+    } else { Die "git not found. Install from https://git-scm.com/download/win" }
 }
 Ok "git ready"
 
-# --- clone or update ---------------------------------------------------------
+# === [3/7] Install location ================================================
 
+Stage "Choose install location"
+
+$pwdRoot = (Get-Location).Drive.Name  # current drive letter, e.g. 'D'
+$defRoot = (Split-Path -Qualifier $DefaultDir).TrimEnd(':')
+
+$defFree = Get-DriveFreeGB $defRoot
+$pwdFree = Get-DriveFreeGB $pwdRoot
+
+Info "Default: $DefaultDir  (${defRoot}: has $defFree GB free)"
+if ($pwdRoot -ne $defRoot) {
+    Info "You're currently on ${pwdRoot}: which has $pwdFree GB free."
+    Write-Host "    Choose:" -ForegroundColor White
+    Write-Host "      [1] Default   - $DefaultDir"
+    Write-Host "      [2] Current   - $(Join-Path $PWD 'revio')"
+    Write-Host "      [3] Custom    - you type the path"
+    while ($true) {
+        $choice = (Read-Host "    Selection [1/2/3]").Trim()
+        if ($choice -in '','1') { $InstallDir = $DefaultDir; break }
+        if ($choice -eq '2')    { $InstallDir = (Join-Path $PWD 'revio'); break }
+        if ($choice -eq '3')    {
+            $custom = (Read-Host "    Full path").Trim('"').Trim()
+            if ($custom) { $InstallDir = $custom; break }
+        }
+        Write-Host "    enter 1, 2, or 3" -ForegroundColor Yellow
+    }
+} else {
+    if (Ask-YesNo "Install to default location ($DefaultDir)?" 'y') {
+        $InstallDir = $DefaultDir
+    } else {
+        $custom = (Read-Host "    Full path").Trim('"').Trim()
+        if (-not $custom) { Die "no path entered" }
+        $InstallDir = $custom
+    }
+}
+$BinDir = Join-Path $InstallDir 'bin'
+Ok "will install to: $InstallDir"
+
+# === [4/7] Clone ============================================================
+
+Stage "Cloning repository"
 if (Test-Path (Join-Path $InstallDir '.git')) {
-    Step "Updating existing checkout at $InstallDir..."
-    git -C $InstallDir fetch --quiet origin
-    git -C $InstallDir reset --hard --quiet origin/main
+    Info "existing checkout found, pulling latest"
+    git -C $InstallDir fetch --progress origin 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+    git -C $InstallDir reset --hard origin/main | Out-Null
     Ok "updated to latest main"
 } else {
-    Step "Cloning revio into $InstallDir..."
     New-Item -ItemType Directory -Force -Path (Split-Path $InstallDir) | Out-Null
-    git clone --quiet --depth 1 $RepoUrl $InstallDir
+    # --progress makes git emit byte/object counters to stderr; visible to user.
+    git clone --progress --depth 1 $RepoUrl $InstallDir 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
     Ok "cloned"
 }
 
-# --- venv + pip install ------------------------------------------------------
+# === [5/7] venv + core install =============================================
 
-Step "Creating virtualenv..."
+Stage "Creating virtualenv and installing core (~150 MB, 1-2 minutes)"
 & $python -m venv (Join-Path $InstallDir '.venv')
 $vpy = Join-Path $InstallDir '.venv\Scripts\python.exe'
-& $vpy -m pip install --quiet --upgrade pip
-Ok "venv at $InstallDir\.venv"
+& $vpy -m pip install --upgrade pip 2>&1 | ForEach-Object {
+    if ($_ -match 'Downloading|Installing|Successfully') { Write-Host "    $_" -ForegroundColor DarkGray }
+}
 
-Step "Installing revio + extras (this may take a minute)..."
-& $vpy -m pip install --quiet -e "$InstallDir[js,plc,python,languages]"
-Ok "revio installed"
+# Core: agent runtime + CLI + base profiles. NO RAG, NO heavy ML deps.
+# pip's native progress bar is visible since we don't pass --quiet.
+& $vpy -m pip install -e "$InstallDir[js,plc,python,languages]" 2>&1 | ForEach-Object {
+    if ($_ -match 'Downloading|Installing|Successfully|error') {
+        Write-Host "    $_" -ForegroundColor DarkGray
+    }
+}
+Ok "core installed"
 
-# --- launcher ----------------------------------------------------------------
+# === [6/7] Optional extras ==================================================
 
-Step "Creating launcher at $BinDir\revio.cmd..."
+Stage "Optional: RAG (heavy ~1 GB) + per-language static analyzers"
+Write-Host ""
+Write-Host "    Picking analyzers for the languages you ACTUALLY use" -ForegroundColor White
+Write-Host "    significantly improves revio's accuracy on those languages." -ForegroundColor DarkGray
+Write-Host ""
+
+# 6a. RAG -------------------------------------------------------------------
+Write-Host "    --- RAG (search your coding guidelines as context) ---" -ForegroundColor White
+Info "Adds chromadb + sentence-transformers + torch (~1 GB on disk)."
+Info "If you won't index company guidelines, skip this. Can be added later."
+if (Ask-YesNo "Install RAG dependencies now?" 'n') {
+    & $vpy -m pip install -e "$InstallDir[rag]" 2>&1 | ForEach-Object {
+        if ($_ -match 'Downloading|Installing|Successfully|error') {
+            Write-Host "    $_" -ForegroundColor DarkGray
+        }
+    }
+    Ok "RAG extras installed"
+} else {
+    Info "skipping RAG. Add later: $vpy -m pip install -e ${InstallDir}[rag]"
+}
+
+# 6b. Static analyzers per language ----------------------------------------
+Write-Host ""
+Write-Host "    --- Static analyzers (one per language; tiny binaries) ---" -ForegroundColor White
+
+function Install-Analyzer {
+    param(
+        [string]$Name, [string]$CheckCmd,
+        [string]$WingetId, [string]$ScoopId, [string]$NpmId,
+        [string]$ManualHint
+    )
+    if (Get-Command $CheckCmd -ErrorAction SilentlyContinue) { Ok "$Name already installed"; return $true }
+    if ($NpmId -and (Get-Command npm -ErrorAction SilentlyContinue)) {
+        Write-Host "    -> npm install -g $NpmId" -ForegroundColor DarkGray
+        $rc = Invoke-Probe { npm install -g $NpmId --silent }
+        if ($rc -eq 0) { Ok "$Name installed via npm"; return $true } else { Warn "$Name npm install failed (rc=$rc)"; return $false }
+    }
+    if ($WingetId -and (Get-Command winget -ErrorAction SilentlyContinue)) {
+        Write-Host "    -> winget install $WingetId" -ForegroundColor DarkGray
+        $rc = Invoke-Probe { winget install --silent --id $WingetId --accept-source-agreements --accept-package-agreements }
+        if ($rc -eq 0) { Ok "$Name installed via winget"; return $true } else { Warn "$Name winget install failed (rc=$rc)"; return $false }
+    }
+    if ($ScoopId -and (Get-Command scoop -ErrorAction SilentlyContinue)) {
+        Write-Host "    -> scoop install $ScoopId" -ForegroundColor DarkGray
+        $rc = Invoke-Probe { scoop install $ScoopId }
+        if ($rc -eq 0) { Ok "$Name installed via scoop"; return $true } else { Warn "$Name scoop install failed (rc=$rc)"; return $false }
+    }
+    if ($ManualHint) { Warn "$Name: $ManualHint" } else { Warn "$Name: no compatible package manager; revio falls back gracefully" }
+    return $false
+}
+
+# Build the menu (label, command-check, install args, default selection)
+$AnalyzerMenu = @(
+    @{ Name='JS/TS (oxlint)';           Check='oxlint';        Npm='oxlint';  Default=$true  }
+    @{ Name='Python (bandit)';          Check='bandit';        VPip='bandit'; Default=$true  }   # bandit is pip-installed via [python] extra already
+    @{ Name='C/C++ (cppcheck)';         Check='cppcheck';      Winget='Cppcheck.Cppcheck';        Scoop='cppcheck';        Default=$true  }
+    @{ Name='Go (golangci-lint)';       Check='golangci-lint'; Winget='golangci-lint.golangci-lint'; Scoop='golangci-lint'; Default=$true  }
+    @{ Name='Shell (shellcheck)';       Check='shellcheck';    Winget='koalaman.shellcheck';      Scoop='shellcheck';      Default=$true  }
+    @{ Name='Lua (luacheck)';           Check='luacheck';      Scoop='luacheck';        Manual='install Scoop (https://scoop.sh) then `scoop install luacheck`'; Default=$false }
+    @{ Name='SQL (sqlfluff)';           Check='__SQLFLUFF__';  Default=$true  }   # special handling: pip into venv
+    @{ Name='Verilog (verilator)';      Check='verilator';     Scoop='verilator'; Manual='install Scoop then `scoop install verilator`, or use WSL'; Default=$false }
+    @{ Name='Rust (clippy)';            Check='cargo-clippy';  Manual='comes with rustup: `rustup component add clippy`'; Default=$false }
+    @{ Name='Java (spotbugs)';          Check='spotbugs';      Winget='SpotBugs.SpotBugs'; Manual='needs JDK; download from spotbugs.github.io'; Default=$false }
+    @{ Name='Ruby (rubocop)';           Check='rubocop';       Manual='install Ruby + `gem install rubocop`'; Default=$false }
+    @{ Name='PHP (phpstan)';            Check='phpstan';       Manual='install PHP + Composer + `composer global require phpstan/phpstan`'; Default=$false }
+    @{ Name='Kotlin (detekt)';          Check='detekt';        Scoop='detekt'; Manual='needs JDK; download detekt-cli from GitHub'; Default=$false }
+)
+
+Write-Host "    [A] Install ALL languages (recommended for evaluation)"
+Write-Host "    [C] Custom - pick per language"
+Write-Host "    [N] None - skip all (LLM + AST still work; add later)"
+$mode = (Read-Host "    Selection [A/C/N]").Trim().ToUpper()
+if ($mode -eq '') { $mode = 'A' }
+
+$selected = @()
+switch ($mode) {
+    'A' { $selected = $AnalyzerMenu | Where-Object { $_.Check -ne '__SQLFLUFF__' -and $_.Default } ; if (-not ($selected | Where-Object { $_.Name -match 'SQL' })) { $selected += $AnalyzerMenu | Where-Object { $_.Check -eq '__SQLFLUFF__' } } ; $selected = $AnalyzerMenu }
+    'N' { Info "skipping all analyzers" }
+    default {
+        Write-Host "    Type Y to install, Enter to skip, for each:" -ForegroundColor DarkGray
+        foreach ($entry in $AnalyzerMenu) {
+            $defChar = if ($entry.Default) { 'y' } else { 'n' }
+            if (Ask-YesNo "      $($entry.Name)?" $defChar) { $selected += $entry }
+        }
+    }
+}
+
+foreach ($entry in $selected) {
+    if ($entry.Check -eq '__SQLFLUFF__') {
+        # sqlfluff: pip-install into revio's venv
+        $rc = Invoke-Probe { & $vpy -m sqlfluff --version }
+        if ($rc -eq 0) { Ok 'sqlfluff already in revio venv' }
+        else {
+            Write-Host "    -> $vpy -m pip install sqlfluff" -ForegroundColor DarkGray
+            $ircSql = Invoke-Probe { & $vpy -m pip install sqlfluff }
+            if ($ircSql -eq 0) { Ok 'sqlfluff installed' } else { Warn "sqlfluff install failed (rc=$ircSql)" }
+        }
+        continue
+    }
+    Install-Analyzer -Name $entry.Name -CheckCmd $entry.Check `
+        -WingetId $entry.Winget -ScoopId $entry.Scoop -NpmId $entry.Npm -ManualHint $entry.Manual | Out-Null
+}
+
+# === [7/7] Launcher + PATH =================================================
+
+Stage "Installing launcher"
 New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
 $launcher = @"
 @echo off
 "$InstallDir\.venv\Scripts\revio.exe" %*
 "@
 Set-Content -Path (Join-Path $BinDir 'revio.cmd') -Value $launcher -Encoding ASCII
-Ok "launcher ready"
-
-# --- optional analyzers ------------------------------------------------------
-
-Step "Looking for optional static analyzers (failures here are non-fatal)..."
-
-function Install-Analyzer($name, $checkCmd, $wingetId, $scoopId, $npmId) {
-    if (Get-Command $checkCmd -ErrorAction SilentlyContinue) { Ok "$name already installed"; return }
-    if ($npmId -and (Get-Command npm -ErrorAction SilentlyContinue)) {
-        Write-Host "  → npm install -g $npmId" -ForegroundColor DarkGray
-        try { npm install -g $npmId --silent 2>$null | Out-Null; Ok "$name installed via npm" } catch { Warn "$name npm install failed" }
-        return
-    }
-    if ($wingetId -and (Get-Command winget -ErrorAction SilentlyContinue)) {
-        Write-Host "  → winget install $wingetId" -ForegroundColor DarkGray
-        try { winget install --silent --id $wingetId --accept-source-agreements --accept-package-agreements 2>$null | Out-Null; Ok "$name installed via winget" } catch { Warn "$name winget install failed" }
-        return
-    }
-    if ($scoopId -and (Get-Command scoop -ErrorAction SilentlyContinue)) {
-        Write-Host "  → scoop install $scoopId" -ForegroundColor DarkGray
-        try { scoop install $scoopId 2>$null | Out-Null; Ok "$name installed via scoop" } catch { Warn "$name scoop install failed" }
-        return
-    }
-    Warn "$name not found, no compatible package manager available — falls back gracefully"
-}
-
-Install-Analyzer 'oxlint'        'oxlint'        ''                              ''         'oxlint'
-Install-Analyzer 'cppcheck'      'cppcheck'      'Cppcheck.Cppcheck'             'cppcheck' ''
-Install-Analyzer 'golangci-lint' 'golangci-lint' 'golangci-lint.golangci-lint'   'golangci-lint' ''
-Install-Analyzer 'shellcheck'    'shellcheck'    'koalaman.shellcheck'           'shellcheck' ''
-Install-Analyzer 'luacheck'      'luacheck'      ''                              'luacheck' ''
-Install-Analyzer 'verilator'     'verilator'     ''                              'verilator'  ''
-# sqlfluff is a pip package — install into revio's venv directly
-$sqlfluffCheck = & $vpy -m sqlfluff --version 2>$null
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "  → pip install sqlfluff (into revio venv)" -ForegroundColor DarkGray
-    try { & $vpy -m pip install --quiet sqlfluff 2>$null | Out-Null; Ok "sqlfluff installed" } catch { Warn "sqlfluff install failed" }
-} else {
-    Ok "sqlfluff already in revio venv"
-}
-# Ruby (rubocop), PHP (phpstan), Kotlin (detekt) need their own toolchains —
-# documented in the README install table.
-# spotbugs needs JDK — leave to user
-# clippy ships with rustup — leave to user
-
-# --- PATH ---------------------------------------------------------------------
+Ok "launcher at $BinDir\revio.cmd"
 
 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 if (-not ($userPath.Split(';') -contains $BinDir)) {
-    Step "Adding $BinDir to your user PATH..."
     $newPath = if ([string]::IsNullOrEmpty($userPath)) { $BinDir } else { "$userPath;$BinDir" }
     [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
-    Ok "PATH updated (open a new shell to pick it up)"
+    Ok "PATH updated (user scope)"
 } else {
-    Ok "PATH already includes $BinDir"
+    Ok "PATH already contains $BinDir"
 }
 
-# --- finale ------------------------------------------------------------------
+# Save metadata for the uninstall script
+$metaPath = Join-Path $InstallDir 'install-metadata.json'
+@{
+    install_dir   = $InstallDir
+    bin_dir       = $BinDir
+    installed_at  = (Get-Date).ToString('o')
+    py_version    = $pyver
+} | ConvertTo-Json | Set-Content -Path $metaPath -Encoding UTF8
 
+# === Finale =================================================================
+
+$total = '{0:mm\:ss}' -f ((Get-Date) - $ScriptStart)
 Write-Host ""
-Write-Host "✓ revio installed" -ForegroundColor Green
+Write-Host "================================================================" -ForegroundColor Green
+Write-Host "  revio installed in $total" -ForegroundColor Green
+Write-Host "================================================================" -ForegroundColor Green
 Write-Host ""
-Write-Host "  Location:    $InstallDir"
-Write-Host "  Launcher:    $BinDir\revio.cmd"
+Write-Host "  Location: $InstallDir"
+Write-Host "  Launcher: $BinDir\revio.cmd  (in PATH)"
 Write-Host ""
-Write-Host "  Next step:   open a new PowerShell, run " -NoNewline
-Write-Host "revio" -ForegroundColor Cyan -NoNewline
-Write-Host " to start the setup wizard."
+Write-Host "  NEXT STEPS:" -ForegroundColor Cyan
+Write-Host "    1. OPEN A NEW PowerShell window (so the updated PATH is loaded)"
+Write-Host "    2. cd into any code folder you want to review"
+Write-Host "    3. Run:  " -NoNewline; Write-Host "revio" -ForegroundColor Cyan -NoNewline; Write-Host " (interactive REPL)"
+Write-Host "       or:  " -NoNewline; Write-Host "revio audit ." -ForegroundColor Cyan -NoNewline; Write-Host "  (one-shot full-repo scan)"
+Write-Host ""
+Write-Host "  Uninstall later:" -ForegroundColor DarkGray
+Write-Host "    iwr https://raw.githubusercontent.com/witold-andelie/revio/main/scripts/uninstall.ps1 | iex"
 Write-Host ""
