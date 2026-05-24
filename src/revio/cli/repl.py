@@ -42,7 +42,8 @@ _console = Console()
 SLASH_COMMANDS = {
     "/help":     "List all slash commands",
     "/?":        "Alias for /help",
-    "/model":    "Change LLM model (usage: /model <name>)",
+    "/model":    "Pick or change LLM model (`/model` to browse, `/model list`, `/model <name>`)",
+    "/models":   "Alias for `/model list` — show all available models on current endpoint",
     "/url":      "Change API endpoint URL (usage: /url <url>)",
     "/key":      "Update API key (masked input)",
     "/profile":  "Switch language profile (auto / js / plc / python)",
@@ -219,6 +220,7 @@ def _handle_slash(line: str, cfg: Config, state: dict) -> bool:
         "/help": _cmd_help,
         "/?": _cmd_help,
         "/model": _cmd_model,
+        "/models": lambda arg, cfg, state: _cmd_model("list", cfg, state),
         "/url": _cmd_url,
         "/key": _cmd_key,
         "/profile": _cmd_profile,
@@ -251,12 +253,62 @@ def _cmd_help(arg: str, cfg: Config, state: dict) -> bool:
 
 
 def _cmd_model(arg: str, cfg: Config, state: dict) -> bool:
-    if not arg:
-        _console.print(f"  current model: [cyan]{cfg.llm.model}[/]")
+    """`/model`                — interactive picker (live + curated)
+    `/model list`              — show available, no picker
+    `/model <name>`            — set directly (no validation)
+    """
+    from .models_catalog import format_table, list_models_for
+
+    arg = arg.strip()
+
+    # Subcommand: list — print the catalog and return
+    if arg == "list" or arg == "ls":
+        _console.print(f"  [dim]endpoint:[/] {cfg.llm.api_url}")
+        entries = list_models_for(cfg.llm.api_url, cfg.llm.resolve_api_key())
+        for line in format_table(entries, current=cfg.llm.model):
+            _console.print(line)
+        if entries:
+            _console.print("  [dim]live[/] = discovered via /v1/models. "
+                           "Use [bold]/model <name>[/] or just [bold]/model[/] to pick.")
         return True
-    cfg.llm.model = arg
+
+    # Direct set: `/model deepseek-reasoner`
+    if arg:
+        cfg.llm.model = arg
+        save_user_config(cfg)
+        _console.print(f"  [green]✓[/] model → [cyan]{arg}[/]")
+        return True
+
+    # No arg → interactive picker
+    _console.print(f"  current model: [cyan]{cfg.llm.model}[/]")
+    _console.print(f"  [dim]endpoint:[/] {cfg.llm.api_url}")
+    _console.print("  [dim]discovering models...[/]")
+    entries = list_models_for(cfg.llm.api_url, cfg.llm.resolve_api_key())
+    if not entries:
+        _console.print("  [yellow]no catalog available; type [bold]/model <name>[/] to set manually[/]")
+        return True
+
+    choices = []
+    for e in entries:
+        label = e.name
+        if e.note:
+            label += f"  ({e.note})"
+        if e.source == "discovered":
+            label += "  [live]"
+        choices.append(questionary.Choice(label, value=e.name))
+    choices.append(questionary.Choice("(cancel)", value=None))
+
+    picked = questionary.select(
+        "Pick a model:",
+        choices=choices,
+        default=next((c for c in choices if c.value == cfg.llm.model), choices[0]),
+    ).ask()
+    if not picked:
+        _console.print("  [dim]cancelled[/]")
+        return True
+    cfg.llm.model = picked
     save_user_config(cfg)
-    _console.print(f"  [green]✓[/] model → [cyan]{arg}[/]")
+    _console.print(f"  [green]✓[/] model → [cyan]{picked}[/]")
     return True
 
 

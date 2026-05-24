@@ -13,8 +13,11 @@ from __future__ import annotations
 # (input USD/1M, output USD/1M)
 PRICING: dict[str, tuple[float, float]] = {
     # DeepSeek (OpenAI-compat) — primary because it's our default provider
-    "deepseek-chat":           (0.27, 1.10),
-    "deepseek-reasoner":       (0.55, 2.19),
+    "deepseek-v4-flash":       (0.14, 0.55),    # current cheap tier
+    "deepseek-v4-pro":         (0.27, 1.10),    # current flagship
+    "deepseek-chat":           (0.27, 1.10),    # legacy alias
+    "deepseek-reasoner":       (0.55, 2.19),    # legacy reasoner
+    "deepseek":                (0.27, 1.10),    # fallback for any deepseek-*
     # Anthropic
     "claude-opus-4-7":         (15.0, 75.0),
     "claude-opus":             (15.0, 75.0),
