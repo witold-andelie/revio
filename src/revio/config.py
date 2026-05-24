@@ -215,21 +215,65 @@ def save_user_config(cfg: Config) -> Path:
 
 
 def _to_toml(data: dict) -> str:
-    """Minimal TOML serializer (avoids adding a write-only dep)."""
+    """Minimal TOML serializer for our Config schema (no write-only dep).
+
+    Handles nested tables (`[mcp.servers.jira]`) recursively. Empty dicts
+    are SKIPPED — they round-trip as Pydantic defaults, and emitting
+    `mcp.servers = ""` (the bug we had) made the loader choke on next
+    startup.
+    """
     lines: list[str] = []
-    # Top-level scalars first (none in our schema, but safe)
-    scalars = {k: v for k, v in data.items() if not isinstance(v, dict)}
-    tables = {k: v for k, v in data.items() if isinstance(v, dict)}
+    _emit_section(data, prefix=[], lines=lines)
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _emit_section(data: dict, prefix: list[str], lines: list[str]) -> None:
+    """Emit one TOML section + recurse for nested tables.
+
+    `prefix` is the dotted path so far ([] = top-level, ['mcp'] = inside
+    `[mcp]`, etc.). Scalars / lists are emitted first under the current
+    header; then each nested dict gets its own `[section.subsection]`.
+    """
+    scalars = {}
+    nested: dict[str, dict] = {}
+    for k, v in data.items():
+        if v is None:
+            continue  # TOML has no null; skip and let Pydantic default fill in
+        if isinstance(v, dict):
+            if not v:
+                continue  # skip empty tables — Pydantic defaults handle them
+            nested[k] = v
+        else:
+            scalars[k] = v
+
+    if scalars and prefix:
+        # Emit the header for the current section (skipped at top-level)
+        lines.append(f"[{'.'.join(prefix)}]")
+    elif scalars and not prefix and lines:
+        # Top-level scalars with prior content — keep them grouped
+        pass
+
     for k, v in scalars.items():
         lines.append(f"{k} = {_toml_value(v)}")
-    if scalars and tables:
+    if scalars:
         lines.append("")
-    for tname, tdata in tables.items():
-        lines.append(f"[{tname}]")
-        for k, v in tdata.items():
-            lines.append(f"{k} = {_toml_value(v)}")
-        lines.append("")
-    return "\n".join(lines).rstrip() + "\n"
+
+    for nname, ndata in nested.items():
+        new_prefix = prefix + [nname]
+        # Only emit the header HERE if the nested dict has scalar fields
+        # of its own; otherwise the recursive call will emit deeper headers.
+        if any(not isinstance(x, dict) for x in ndata.values()):
+            lines.append(f"[{'.'.join(new_prefix)}]")
+            sub_scalars = {k: v for k, v in ndata.items() if not isinstance(v, dict) and v is not None}
+            sub_nested  = {k: v for k, v in ndata.items() if isinstance(v, dict) and v}
+            for k, v in sub_scalars.items():
+                lines.append(f"{k} = {_toml_value(v)}")
+            lines.append("")
+            for nn, nd in sub_nested.items():
+                _emit_section({nn: nd}, prefix=new_prefix, lines=lines)
+        else:
+            # Pure-nested dict (e.g. mcp.servers = {jira: {...}}) — recurse
+            _emit_section(ndata, prefix=new_prefix, lines=lines)
 
 
 def _toml_value(v) -> str:
@@ -243,4 +287,11 @@ def _toml_value(v) -> str:
         return f'"{escaped}"'
     if isinstance(v, list):
         return "[" + ", ".join(_toml_value(x) for x in v) + "]"
+    if isinstance(v, dict):
+        # Inline-table form: { k = v, k2 = v2 } — but only callsite that
+        # reaches here is when we deliberately want a one-line dict.
+        # For our schema we route dicts through _emit_section instead;
+        # this branch exists so list-of-dicts doesn't blow up.
+        items = ", ".join(f"{k} = {_toml_value(val)}" for k, val in v.items())
+        return "{" + items + "}"
     return f'"{v}"'
