@@ -37,20 +37,56 @@ $ revio review --commit HEAD
 
 ## Install
 
+### One-click
+
+**macOS / Linux** — copy-paste into a terminal:
 ```bash
-git clone <repo>
+curl -sSL https://raw.githubusercontent.com/witold-andelie/revio/main/scripts/install.sh | bash
+```
+
+**Windows** — copy-paste into PowerShell:
+```powershell
+iwr https://raw.githubusercontent.com/witold-andelie/revio/main/scripts/install.ps1 | iex
+```
+
+What the installer does:
+1. Verifies Python ≥ 3.11 (offers to install via `winget` on Windows if missing)
+2. Clones the repo to `~/.local/share/revio` (macOS / Linux) or `%LOCALAPPDATA%\revio` (Windows)
+3. Creates a venv inside that directory and pip-installs `revio` with all extras
+4. Installs **oxlint / cppcheck / golangci-lint** via your OS package manager if available (graceful skip otherwise — revio falls back to AST + LLM)
+5. Adds a `revio` launcher to `~/.local/bin` (macOS / Linux) or `%LOCALAPPDATA%\revio\bin` on PATH (Windows)
+
+Re-run the same command anytime to update to the latest `main`.
+
+### Manual install (any OS)
+
+```bash
+git clone https://github.com/witold-andelie/revio.git
 cd revio
 python3 -m venv .venv
+# macOS / Linux:
 .venv/bin/pip install -e ".[js,plc,python,languages]"
+# Windows PowerShell:
+.venv\Scripts\pip install -e ".[js,plc,python,languages]"
 ```
 
-Strongly recommended (per language you actually use):
+Or straight from GitHub without cloning:
 ```bash
-brew install oxlint cppcheck golangci-lint spotbugs    # macOS
-rustup component add clippy
+pip install "git+https://github.com/witold-andelie/revio.git#egg=revio[js,plc,python,languages]"
 ```
 
-Missing analyzers → revio falls back to AST + LLM. No hard failure.
+### Optional static analyzers (per language)
+
+| Language | Tool | macOS / Linux | Windows |
+|---|---|---|---|
+| JS / TS | oxlint | `brew install oxlint` / `npm i -g oxlint` | `npm i -g oxlint` |
+| Python | bandit | (already in `[python]` extra) | (already in `[python]` extra) |
+| C / C++ | cppcheck | `brew install cppcheck` / `apt install cppcheck` | `winget install Cppcheck.Cppcheck` |
+| Go | golangci-lint | `brew install golangci-lint` | `winget install golangci-lint.golangci-lint` |
+| Rust | clippy | `rustup component add clippy` | `rustup component add clippy` |
+| Java | spotbugs | `brew install spotbugs` (needs JDK) | download from spotbugs.github.io |
+
+**Missing analyzers don't break anything** — revio detects what's installed and falls back to AST + LLM reasoning for the rest.
 
 ---
 
