@@ -1177,6 +1177,112 @@ pyproject.toml: [project.scripts]
 
 ---
 
+## 13c. Adding analyzers after install (`revio analyzers`)
+
+**Symptom**: user wants C++ / Kotlin / etc. coverage after the initial
+install. Re-running the installer is overkill — there's a dedicated
+subcommand.
+
+**File trace**:
+```
+cli/main.py:analyzers_app   ← Typer subgroup
+   ├── revio analyzers              → _analyzers_print_status (status table)
+   ├── revio analyzers list         → same
+   ├── revio analyzers install <C>  → analyzers_install
+   └── revio analyzers menu         → interactive picker (uses questionary)
+   ↓
+cli/analyzers.py
+   REGISTRY = [AnalyzerSpec(code='j', label='JS / TS', check_cmd='oxlint',
+                            npm_id='oxlint', ...), ...]
+   ↓
+   parse_letters('jcs')  ← case-insensitive, dedup, ignore spaces
+                         ← '*' = full registry
+                         ← unknown letters bubble up so the CLI can warn
+   ↓
+   install_one(spec)
+     1. is_installed(spec)? → return InstallOutcome(status='already')
+     2. is_pip_into_venv (sqlfluff)? → `sys.executable -m pip install <pkg>`
+     3. npm available + spec has npm_id? → `npm install -g <pkg>`
+     4. platform == macOS + brew + spec.brew_pkg? → `brew install <pkg>`
+        platform == linux + apt + spec.apt_pkg?  → `sudo apt-get install <pkg>`
+        platform == windows + winget + spec.winget_id? → `winget install ...`
+                          OR + scoop + spec.scoop_id?  → `scoop install ...`
+     5. Nothing matched → InstallOutcome(status='skipped',
+                                          note=spec.manual_hint or 'no PM')
+   ↓
+   Output (rich-formatted):
+     ✓ [letter]  Label  (already installed)
+     ✓ [letter]  Label  (via brew)
+     ✗ [letter]  Label  failed via winget: rc=...
+     · [letter]  Label
+         needs JDK; download detekt-cli from GitHub
+```
+
+**Invariant**: REGISTRY in `cli/analyzers.py` MUST match the menus in
+`scripts/install.sh` + `scripts/install.ps1`. When adding a new analyzer:
+edit all three. The smoke test could enforce this but doesn't (TODO).
+
+**Common failures**:
+- **Letter not recognized**: typo. `revio analyzers list` shows the
+  legitimate letters.
+- **Install hangs**: package manager waiting on a sudo prompt or
+  network. Run the underlying command manually (`sudo apt-get install
+  cppcheck` etc.) to see the real error.
+- **Status table says 'installed' but agent says 'not found'**: the
+  binary is on PATH for one shell but not the one revio started in.
+  Restart revio. (Or PATH inheritance bug — check `$env:PATH` /
+  `echo $PATH`.)
+
+---
+
+## 13d. Output-language routing (i18n)
+
+**Symptom**: agent returns English findings even when user asked in
+Chinese / German / etc.
+
+**No special routing layer** — this is enforced 100% by the prompt:
+
+`src/revio/agent/prompts.py:SYSTEM_PROMPT`'s 'Output language' section
+declares TWO buckets:
+
+```
+USER LANGUAGE bucket (mirrors whatever the user typed):
+  Finding.title / hypothesis / suggestion / counter_considered
+  reflect summary
+  systemic_observations entries
+  Plan text shown in the stream Panel
+
+ENGLISH bucket (always — for tool / log compatibility):
+  All tool call args (read_file('src/auth.py'), regex queries, ...)
+  Evidence.summary strings that quote verbatim tool output
+  Severity / Category enum values
+```
+
+`PLAN_PROMPT` and `REFLECT_PROMPT` mirror the same rule. The LLM
+infers user language from conversation history (the user's request is
+in the message stream). No regex detection, no language-tag plumbing.
+
+**Why it works without a detection layer**:
+- Modern LLMs (Claude / DeepSeek / Mistral / Qwen / mimo) reliably
+  mirror the input language when explicitly instructed.
+- Tool args staying English avoids the trap of path translation
+  (revio always calls `read_file("src/auth.py")`, never `read_file("源/认证.py")`).
+- Evidence quotes staying English ensures bandit / cppcheck / etc.
+  output is preserved verbatim (their rules are English-named).
+
+**Common failures**:
+- **Findings come back English when user asked in CJK**: usually a
+  smaller / older model not following the instruction. Try a larger
+  model. Or set `REVIO_DEBUG=1` and inspect what the system prompt
+  actually delivered — sometimes a wizard misconfigured `disable_thinking`
+  on a thinking-only model and the system message got truncated.
+- **Tool args got translated** (e.g. agent tries to read a Chinese path
+  that doesn't exist): same root cause — model didn't honor the
+  two-bucket rule. Prompt is explicit enough that this shouldn't
+  happen on Claude 4 / DeepSeek-V3 / Mistral-Large-2 / Qwen-2.5+.
+
+---
+
 ## 14. Quick diagnostic checklist
 
 | Symptom | First check |
@@ -1188,7 +1294,9 @@ pyproject.toml: [project.scripts]
 | Wizard infinite loop | Delete `~/.config/revio/config.toml` and retry |
 | `--fix` reports 0 patches | Check that propose_patch was called (look at `tool_start` events for `propose_patch`) AND `sys.modules["revio.cli.main"]._last_session_patches` is non-empty |
 | RAG returns nothing | `revio guidelines list` to verify; per-repo index lives in `~/.cache/revio/<hash>/` |
-| Tests fail after a change | Run all 7: M1/M2/M3/MCP/Languages/PLC/Patch smoke tests |
+| Tests fail after a change | Run all 9 smoke tests in tests/ |
+| Findings come back English when user asked in CJK | Model not following bucket-rule; see §13d. Try a larger model |
+| `revio analyzers install` says skipped | No package manager available for that OS+analyzer; follow the `manual_hint` in the output |
 
 ---
 

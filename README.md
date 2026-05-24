@@ -234,6 +234,44 @@ model = "deepseek-v4-pro"
 For per-project overrides, drop a `.revio.toml` in the repo root —
 shadows the user-global config and is meant to be committed.
 
+### Switching LLM model / endpoint / key after install
+
+Three paths, easiest first:
+
+| Goal | Command (in the REPL) |
+|---|---|
+| Browse and pick a model (auto-discovers `/v1/models`) | `/model` |
+| List models without picking | `/model list` (or `/models`) |
+| Set model directly | `/model deepseek-v4-pro` |
+| Change endpoint URL | `/url https://api.mistral.ai/v1` |
+| Rotate API key (masked input) | `/key` |
+| Open the full config file in `$EDITOR` | `/config` |
+| Re-run the 6-step wizard | `revio config init` |
+
+The `/model` picker hits `GET /v1/models` on the current endpoint at
+runtime, so for any new provider (Mistral, a new Xiaomi API, your
+in-house vLLM, etc.) you see the model catalog **the provider is
+actually serving right now** — no need to know model IDs by heart.
+
+### Adding more static analyzers after install
+
+The installer asked you to pick analyzers by letter code. To add more
+later **without re-running the installer**:
+
+```bash
+revio analyzers              # status table — what's installed vs missing
+revio analyzers install jcs  # install JS + C/C++ + Shell (same letter codes)
+revio analyzers install '*'  # install ALL remaining
+revio analyzers menu         # interactive picker
+```
+
+revio detects your OS and uses the right package manager (brew on macOS,
+apt on Linux, winget / scoop on Windows). sqlfluff is pip-installed
+into revio's own venv. Letter codes are the same as the installer's:
+
+  `j` JS · `c` C/C++ · `g` Go · `r` Rust · `a` Java · `s` Shell ·
+  `l` Lua · `q` SQL · `v` Verilog · `u` Ruby · `h` PHP · `k` Kotlin
+
 ---
 
 ## Local / self-hosted LLM (zero data leaves the box)

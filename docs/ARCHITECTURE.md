@@ -1025,6 +1025,8 @@ competitor at the time of writing.
 - **"Pluggable LLM"** — Anthropic native + any OpenAI-compatible (DeepSeek $0.013 per audit / local Ollama / etc.)
 - **"Actually applies fixes + multi-step undo"** — `dedup --fix` writes to filesystem; `revio fix undo` rolls back any past session (snapshot-based, no git required)
 - **"University-ready"** — covers EE (PLC/Verilog/MATLAB/embedded C) + CS (mainstream langs); cites course syllabi via RAG
+- **"Output language follows user input"** — ask in Chinese, the title/hypothesis/suggestion/summary come back in Chinese; ask in German, German; tool args + evidence quotes stay English for log-greppability
+- **"Post-install ergonomics matter"** — `/model` picker for switching LLM (with live `/v1/models` discovery); `revio analyzers install jcs` for adding more language analyzers; both work without re-running the bootstrap installer
 
 ---
 

@@ -59,6 +59,9 @@ app.add_typer(skills_app, name="skills")
 fix_app = typer.Typer(help="Inspect and undo past `--fix` sessions.")
 app.add_typer(fix_app, name="fix")
 
+analyzers_app = typer.Typer(help="Inspect and add Layer-2 static analyzers.")
+app.add_typer(analyzers_app, name="analyzers")
+
 
 # --- Root callback ------------------------------------------------------------
 
@@ -834,6 +837,89 @@ def fix_clean(
         store.max_age_days = older_than_days
     store.cleanup()
     _console.print("  [green]✓[/] cleanup complete (max_sessions + age caps enforced)")
+
+
+# --- Analyzers (list / install / interactive menu) ---------------------------
+
+
+@analyzers_app.callback(invoke_without_command=True)
+def _analyzers_root(ctx: typer.Context):
+    """Default action: print a status table when called with no subcommand."""
+    if ctx.invoked_subcommand is not None:
+        return
+    _analyzers_print_status()
+
+
+def _analyzers_print_status() -> None:
+    from .analyzers import status_table_rows
+
+    rows = status_table_rows()
+    _console.print()
+    _console.print("  [bold]Layer-2 static analyzers[/]")
+    _console.print()
+    width = max(len(label) for _, label, _ in rows)
+    for letter, label, st in rows:
+        if st == "installed":
+            marker = "[green]✓[/]"
+            tag = "[dim](on PATH)[/]"
+        else:
+            marker = "[dim]·[/]"
+            tag = "[yellow](not installed)[/]"
+        _console.print(f"  [bold cyan]{letter}[/]  {marker}  {label.ljust(width)}  {tag}")
+    _console.print()
+    _console.print("  Add more:")
+    _console.print("    [cyan]revio analyzers install jcs[/]   "
+                   "[dim]# install JS + C/C++ + Shell[/]")
+    _console.print("    [cyan]revio analyzers install '*'[/]   [dim]# install ALL[/]")
+    _console.print("    [cyan]revio analyzers menu[/]          "
+                   "[dim]# interactive picker (same letter menu)[/]")
+    _console.print()
+
+
+@analyzers_app.command("list", help="Show which analyzers are installed / missing.")
+def analyzers_list():
+    _analyzers_print_status()
+
+
+@analyzers_app.command("install", help="Install analyzers by letter code (jcs, '*', etc.).")
+def analyzers_install(
+    codes: str = typer.Argument(..., help="Letter codes, e.g. 'jcs' or '*' for all."),
+):
+    from .analyzers import install_one, parse_letters
+
+    specs, unknown = parse_letters(codes)
+    for ch in unknown:
+        _console.print(f"  [yellow]·[/] unknown letter '{ch}' — skipping")
+    if not specs:
+        _console.print("  [dim](nothing to install — try `revio analyzers` to see the menu)[/]")
+        return
+    _console.print(f"  installing: [cyan]{', '.join(s.code for s in specs)}[/]")
+    for spec in specs:
+        outcome = install_one(spec)
+        if outcome.status == "already":
+            _console.print(f"    [green]✓[/] [cyan]{spec.code}[/]  {spec.label}  [dim](already installed)[/]")
+        elif outcome.status == "installed":
+            _console.print(f"    [green]✓[/] [cyan]{spec.code}[/]  {spec.label}  [dim](via {outcome.via})[/]")
+        elif outcome.status == "failed":
+            _console.print(f"    [red]✗[/] [cyan]{spec.code}[/]  {spec.label}  [dim]failed via {outcome.via}: {outcome.note}[/]")
+        else:  # skipped
+            _console.print(f"    [yellow]·[/] [cyan]{spec.code}[/]  {spec.label}")
+            _console.print(f"        [dim]{outcome.note}[/]")
+
+
+@analyzers_app.command("menu", help="Interactive letter-coded picker (same as the installer).")
+def analyzers_menu():
+    from .analyzers import REGISTRY, install_one, parse_letters
+
+    _analyzers_print_status()
+    raw = questionary.text(
+        "Letters to install (e.g. 'jcs' or '*' for all, blank to cancel):",
+        default="",
+    ).ask()
+    if not raw:
+        _console.print("  [dim]cancelled[/]")
+        return
+    analyzers_install(raw)
 
 
 # --- MCP server subcommand ----------------------------------------------------
