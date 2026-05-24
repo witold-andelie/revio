@@ -692,6 +692,7 @@ agent/runner.py:run_agent emits events via on_event(type, payload)
    - plan
    - tool_start, tool_end
    - llm_start, llm_token, llm_end (when streaming model output)
+   - llm_usage (real numbers from usage_metadata — see §14)
    - finding_recorded, finding_dropped
    - reflect (with summary + observations)
    - findings_compared
@@ -705,10 +706,161 @@ output/stream.py:StreamRenderer.handle(event, payload):
    - _on_plan: blue Panel with plan text
    - _on_tool_start: → arrow + tool name + args summary
    - _on_tool_end: ✓ check + result preview
+   - _on_llm_usage: inline 'tokens +X in, +Y out (...)' line
    - _on_finding_recorded: severity-badge card
    - _on_reflect: cyan rule + summary
-   - _on_session_end: full finding cards + footer stats
+   - _on_session_end: full finding cards + footer stats incl. token totals
 ```
+
+---
+
+## 14. Token meter + cost (per-call + cumulative)
+
+**Symptom**: token numbers wrong, throughput shows zero, `$` figure
+appears for a model where we don't have pricing, or vice versa
+
+**File trace**:
+```
+agent/runner.py:_TokenAccountant(model)
+   ↓
+   on `on_chat_model_start` event:
+      accountant.on_llm_start()
+         self._last_call_start = time.time()
+   ↓
+   on `on_chat_model_stream` event:
+      pass-through — chunk text streamed via 'llm_token' event
+   ↓
+   on `on_chat_model_end` event:
+      out_msg = data.get("output")            ← AIMessage
+      usage = getattr(out_msg, "usage_metadata", None)
+         ★ LangChain standardized field: {input_tokens, output_tokens, total_tokens}
+         ★ FALLBACK: if missing, try response_metadata.token_usage
+           with {prompt_tokens, completion_tokens} (some OpenAI-compat
+           servers use the old naming).
+      ↓
+      payload = accountant.on_llm_end(usage)
+         elapsed = now - self._last_call_start
+         self.input_tokens  += int(usage["input_tokens"])
+         self.output_tokens += int(usage["output_tokens"])
+         self.call_count    += 1
+         throughput = (delta_out / elapsed) if elapsed > 0.01 else 0
+         return {
+             "model": self.model,                   ← needed by is_priced gate
+             "delta_input": ..., "delta_output": ...,
+             "total_input": ..., "total_output": ...,
+             "throughput_tps": ...,
+             "est_cost_usd": estimate_cost_usd(model, total_in, total_out),
+             "call_count": ...,
+         }
+      ↓
+      on_event("llm_end", payload)            (existing)
+      on_event("llm_usage", payload)          (new, drives the inline line)
+   ↓
+   ... session continues ...
+   ↓
+   _build_report(state, config, accountant=accountant):
+      Returns ReviewReport with:
+         total_input_tokens  = accountant.input_tokens
+         total_output_tokens = accountant.output_tokens
+         llm_call_count      = accountant.call_count
+         est_cost_usd        = accountant.est_cost_usd
+```
+
+**Rendering path** (`output/stream.py:StreamRenderer`):
+```
+_on_llm_usage(payload):
+   if delta_in == 0 and delta_out == 0: return    ← stay silent for unknown providers
+   from .cost import is_priced
+   cost_part = f" · {format_cost(est_cost)}" if is_priced(model) else ""
+   print("  · tokens +Xk in, +Y out (Σ Σin / Σout · TPS{cost_part})")
+
+_on_session_end(payload):
+   ... existing footer ...
+   if tok_in > 0 or tok_out > 0:
+      cost_part = f" · {format_cost(cost)}" if is_priced(model) else ""
+      print(f"  tokens: {format_count(tok_in)} in · {format_count(tok_out)} out · ...{cost_part}")
+```
+
+**Pricing matcher** (`output/cost.py`):
+```
+_resolve_pricing(model) → (input_$/1M, output_$/1M)
+   - Lowercase the model name
+   - Pick the LONGEST substring match in PRICING dict
+     (so 'deepseek-v4-pro-0524' matches 'deepseek-v4-pro', not 'deepseek')
+   - Return (0.0, 0.0) for any unmatched model
+
+is_priced(model) → bool
+   - Returns True iff _resolve_pricing(model) is not (0, 0)
+   - Used as a gate: when False, the renderer drops the '$' segment.
+     Token counts and throughput still print.
+```
+
+**Common failures**:
+- **All tokens show 0**: provider didn't populate `usage_metadata`
+  AND didn't populate `response_metadata.token_usage`. Add a provider-
+  specific extraction branch in `_dispatch_event`'s `on_chat_model_end`
+  handler.
+- **Throughput shows '—' constantly**: `delta_output` is zero (the call
+  ended without producing text) OR `elapsed < 0.01s` (very fast cached
+  response). Both are correct; the dash is intentional.
+- **`$0.00` appears**: model name matched a `(0, 0)` entry (intentional
+  for `llama` / `qwen` / `ollama` local models). For an unknown model
+  that you DO want to see priced, add an entry to `PRICING`.
+- **`$` appears for unknown model**: `is_priced` returned True
+  spuriously — check the substring match isn't being shadowed by a
+  longer key.
+
+---
+
+## 15. /model picker + live discovery
+
+**Symptom**: `/model` doesn't show the actual models available on a new
+provider's endpoint, or the picker is empty for a known provider
+
+**File trace**:
+```
+cli/repl.py:_cmd_model(arg, cfg, state)
+   ↓
+   if arg == "list" or arg == "ls":
+      → fall to discovery path, print only
+   if arg:
+      → cfg.llm.model = arg; save_user_config(cfg); done
+   else:
+      → discovery path + interactive questionary picker
+   ↓
+   cli/models_catalog.py:list_models_for(api_url, api_key)
+      → discover_from_endpoint(api_url, api_key)
+         url = api_url.rstrip('/') + ('/models' if '/v1' in url else '/v1/models')
+         urllib.request with Bearer api_key, SSL context = certifi
+            ★ MUST use certifi context — macOS Python's default trust store
+              fails on legitimate certs ('CERTIFICATE_VERIFY_FAILED').
+         Parse {"data": [{"id": "..."}]} → list of ModelEntry(source="discovered")
+         ★ Returns [] on ANY exception — network, auth, parse — never raises.
+      → If discovered is empty: fall back to curated_for(api_url)
+         curated_for iterates _CURATED dict; returns entries whose
+         substring key matches api_url.
+      → If both empty: return []
+      → If discovered won: merge curated 'note' fields onto discovered
+        entries when names match (so live deepseek-v4-pro gets the
+        'strongest, recommended' note from curated).
+```
+
+**Common failures**:
+- **`/model` returns empty for a known provider**: API key invalid or
+  endpoint changed. Check `discover_from_endpoint` against the URL
+  manually with curl. Curated fallback should still produce results
+  if the api_url substring matches.
+- **`/model` discovers nothing for a new vendor**: their endpoint
+  doesn't expose `/v1/models`. Two options: (1) add a curated entry
+  in `_CURATED` keyed on a substring of their api_url, or (2) tell
+  the user to use `/model <name>` directly.
+- **`CERTIFICATE_VERIFY_FAILED`**: certifi import failed. Ensure
+  `certifi` is in install_requires. The code falls back to system
+  trust store if certifi is missing, which fails on macOS — install
+  certifi.
+- **Live discovered model has no pricing**: expected for new vendors.
+  See §14 — the `$` figure is intentionally suppressed when
+  `is_priced` is False.
 
 **Common failures**:
 - **Missing event in output**: add a `_on_<event>` method to StreamRenderer

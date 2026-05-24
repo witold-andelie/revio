@@ -161,6 +161,10 @@ Concrete: a 50-function module returns:
 | Estimated output tokens | ~5K |
 | Cost (deepseek-chat) | ~$0.013 |
 
+These numbers aren't estimated — they're read off every LLM response's
+`usage_metadata` by `_TokenAccountant` in `agent/runner.py` and surfaced
+in real time. See §17 below.
+
 ---
 
 ## 5. Highlight #3 — Static analysis layer (Layer 2) advantages
@@ -1025,3 +1029,99 @@ tools.
 > consuming your wiki/jira to ground its findings, and exposing its
 > review pipelines to whatever IDE-side agent your team already uses.
 > This is what an integration story looks like in 2026."
+
+---
+
+## 17. Token meter & cost transparency
+
+A code-review tool with hidden LLM costs is unprofitable to deploy at
+scale. revio surfaces every token in real time and shows the running
+USD cost so users (and finance teams) can budget honestly.
+
+### 17.1 How accounting works
+
+```mermaid
+flowchart LR
+    LLM["LLM provider<br/>(any OpenAI-compat / Anthropic)"]
+    LLM -- "AIMessage.usage_metadata<br/>{input_tokens, output_tokens}" --> ACC
+    ACC["_TokenAccountant<br/>agent/runner.py"]
+    ACC -- "per-call delta + cumulative" --> EVT["stream event 'llm_usage'"]
+    EVT --> REND["StreamRenderer<br/>output/stream.py"]
+    REND -- "inline per-call line" --> Terminal
+    REND -- "footer summary" --> Terminal
+    ACC -- "session totals" --> RPT["ReviewReport.<br/>total_input_tokens,<br/>total_output_tokens,<br/>est_cost_usd"]
+    RPT --> JSON["--format json"]
+    RPT --> MD["--format markdown"]
+```
+
+**Numbers are not estimated.** They come from the provider's own
+`usage_metadata` field (standardized across LangChain providers) on the
+final AIMessage of every chat-model call. Fallback: some OpenAI-compat
+servers stash it under `response_metadata.token_usage` instead — we
+read that too.
+
+### 17.2 Pricing table
+
+`src/revio/output/cost.py` ships a fuzzy-matching dict of `(model →
+input_$/1M, output_$/1M)` covering:
+
+| Family | Examples |
+|---|---|
+| DeepSeek | `deepseek-v4-pro`, `deepseek-v4-flash`, legacy `deepseek-chat` / `-reasoner` |
+| Anthropic | `claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5` |
+| OpenAI | `gpt-4o`, `gpt-4o-mini`, `gpt-4.1`, `o1` |
+| Mistral | `mistral-large`, `mistral-small` |
+| Local | `llama*`, `qwen*`, `ollama*` → `(0, 0)` (free) |
+
+Fuzzy match picks the longest substring hit — so `deepseek-v4-pro-0524`
+still folds to `deepseek-v4-pro`.
+
+### 17.3 The "unknown provider" rule
+
+Customers might point revio at any new API — Xiaomi, a private vLLM
+deployment, a brand-new Chinese provider released this quarter. We
+**cannot** know their pricing.
+
+Design decision: when `is_priced(model)` returns False, **the `$` figure
+is suppressed entirely** — never shown as `$0.00`. Token counts and
+throughput still display (those are always accurate, read from the
+API's own response). The dollar amount just disappears.
+
+```
+known model:    tokens +1.2k in, +340 out  (Σ 8.4k / 1.9k · 85 tok/s · $0.011)
+unknown model:  tokens +1.2k in, +340 out  (Σ 8.4k / 1.9k · 85 tok/s)
+```
+
+Why this matters: `$0.00` reads as "free" which is dangerous when
+the user is actually being billed. Silence is honest.
+
+### 17.4 `/model` picker — pairing model choice with cost
+
+The REPL's `/model` command supports three modes (`cli/models_catalog.py`):
+
+| Invocation | Behavior |
+|---|---|
+| `/model` | Interactive picker — populated from live `GET /v1/models` + curated catalog |
+| `/model list` (alias `/models`) | Print available models inline, mark current with `●` |
+| `/model <name>` | Direct set (no validation — supports any string) |
+
+`GET /v1/models` is an OpenAI-compat de-facto standard. So even if
+Xiaomi (or any new vendor) ships their endpoint tomorrow, as long as
+they follow the convention the picker shows the live catalog with no
+revio code change.
+
+Curated fallback covers endpoints that don't expose `/models` (native
+Anthropic) or offline scenarios. Discovered entries get decorated with
+curated `note` fields when names match.
+
+### 17.5 What this gives the user
+
+- **Predictable spend**: each call's cost shown immediately; session
+  total in the footer; `/cost` for cumulative.
+- **No lock-in to a provider**: switch model on the fly via `/model`,
+  see the impact next call.
+- **No misleading numbers**: pricing absent → dollars absent. Token
+  counts always real.
+- **API-agnostic forever**: any new OpenAI-compat provider works the
+  day it launches. Curated pricing can be added later without changing
+  any of the runtime code paths.

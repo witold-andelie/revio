@@ -342,13 +342,15 @@ Type / for commands, or describe what you want.
 | | |
 |---|---|
 | `/help` `/?` | List all commands |
-| `/model <name>` | Change LLM model |
+| `/model` | Interactive picker (live `/v1/models` + curated catalog) |
+| `/model <name>` | Set LLM model directly |
+| `/model list`, `/models` | List available models on current endpoint |
 | `/url <url>` | Change API endpoint |
 | `/key` | Update API key (masked) |
 | `/profile <name>` | Switch profile (auto / js / plc / python / ...) |
 | `/mode <name>` | Default mode for next NL input |
 | `/budget <n>` | Set tool-call budget for this session |
-| `/cost` | Estimated token usage |
+| `/cost` | Real token usage + est. cost (USD) for the REPL session |
 | `/config` | Open config file in $EDITOR |
 | `/clear` | Clear screen |
 | `/history` | Recent REPL commands |
@@ -401,10 +403,42 @@ Stream events the renderer surfaces:
 - `plan` — agent's strategy box
 - `tool_start` / `tool_end` — every tool call with truncated result
 - `finding_recorded` — severity-badged finding card
+- `llm_usage` — per-LLM-call token delta + running totals + throughput
 - `reflect` — summary + systemic observations
 - `findings_compared` — cross-run delta (new / still_present / maybe_fixed)
 - `findings_dropped` — grounding-validator rejections (with reason)
 - `session_end` — full report cards
+
+---
+
+## Token usage & cost
+
+revio reads real `usage_metadata` off every LLM response and prints it
+inline. After each LLM call:
+
+```
+  · tokens +1.2k in, +340 out  (Σ 8.4k / 1.9k · 85 tok/s · $0.011)
+```
+
+And in the session footer:
+
+```
+  session: 6/6 tool calls · 7 findings · 18.1s · deepseek-v4-pro
+  tokens:  12.6k in · 573 out · 5 LLM call(s) · avg 32 tok/s · $0.0040
+```
+
+Pricing is fuzzy-matched against an internal table (DeepSeek / Claude /
+OpenAI / Mistral / local Ollama). **For models we don't have pricing for
+(Xiaomi, new providers, custom endpoints, etc.) the `$` amount is
+silently omitted** — token counts and throughput still show, but the
+dollar figure disappears rather than misleading you with `$0.00`.
+
+`/cost` in the REPL prints cumulative usage across all NL queries in
+the session, also gated on pricing availability.
+
+JSON and markdown outputs include `total_input_tokens`,
+`total_output_tokens`, `llm_call_count`, and `est_cost_usd` fields on
+`ReviewReport`.
 
 ---
 
