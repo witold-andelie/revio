@@ -31,7 +31,7 @@ $ revio review --commit HEAD
 | **MCP** | Client + server — connects to your tools, exposes its own |
 | **`dedup --fix` + undo** | Applies patches AND records snapshot history — `revio fix undo` reverts any past session |
 | **Cross-session memory** | "🆕 New since last run: 3" — SQLite-backed |
-| **Multi-LLM** | Anthropic + OpenAI-compat (DeepSeek / Mimo / OpenRouter / Ollama / ...) |
+| **Multi-LLM** | Anthropic · DeepSeek · **Mistral** (EU-sovereign) · OpenAI · OpenRouter · any OpenAI-compatible endpoint |
 | **Multilingual REPL** | Any human language (en / 中 / de / es / 日 ...) → English findings |
 
 ---
@@ -168,13 +168,30 @@ git; the git stash path remains as additional safety when present.
 revio config show / edit / path / init
 ```
 
-Or directly in `~/.config/revio/config.toml`:
+Or directly in `~/.config/revio/config.toml`. Examples for the major
+providers:
+
 ```toml
+# DeepSeek (cheapest cloud option; default in our wizard)
 [llm]
-provider = "openai_compat"             # or "anthropic" / "mimo" / "custom"
+provider = "openai_compat"
 api_url = "https://api.deepseek.com"
 api_key = "sk-..."
 model = "deepseek-v4-pro"
+
+# Mistral (EU-sovereign — recommended for European customers)
+# [llm]
+# provider = "openai_compat"
+# api_url = "https://api.mistral.ai/v1"
+# api_key = "..."
+# model = "codestral-latest"           # code-specialized 22B, perfect for revio
+
+# Anthropic native
+# [llm]
+# provider = "anthropic"
+# api_url = "https://api.anthropic.com"
+# api_key = "sk-ant-..."
+# model = "claude-sonnet-4-6"
 ```
 
 For per-project overrides, drop a `.revio.toml` in the repo root —
@@ -196,6 +213,12 @@ llama.cpp server · LM Studio · LocalAI · TGI (HuggingFace Text
 Generation Inference) · OpenLLM · Triton Inference Server**. If it
 exposes `/v1/chat/completions`, revio works against it.
 
+Open-weight model families that work well with revio (verified):
+**Mistral / Mixtral / Codestral** (EU-sovereign, recommended in Europe) ·
+**Qwen 2.5 / Qwen 3** (multilingual, esp. strong Chinese) · **Llama 3.1 / 3.3** ·
+**DeepSeek-V3 / R1** · **Gemma** · **Phi-4** · **GPT-OSS**. Any model with
+function-calling support — the agent loop uses tool calls.
+
 ### Why this matters
 
 | Constraint | Why local LLM is the only answer |
@@ -203,7 +226,8 @@ exposes `/v1/chat/completions`, revio works against it.
 | Student / patient / financial code review | FERPA / HIPAA / GDPR / SOX often forbid sending code to a US API |
 | **Banks / insurance / law firms** | Internal IP + regulator audit trails — code must stay inside the firewall, often with full-size models running on private GPU clusters |
 | **Government / defense / aerospace** | Air-gapped by policy; both `plc` and `verilog` profiles are valuable here |
-| **National AI sovereignty** | Russia / China / EU mandates that prohibit US-origin LLM access for state-related work |
+| **EU AI sovereignty** | French / German / Italian / Czech / Polish customers can run **Mistral** (EU-headquartered, open-weight) or **Mixtral** locally — GDPR-compliant by construction |
+| **National AI sovereignty** | Other jurisdictions with similar mandates (China, Russia, etc.) |
 | Cost at scale | A CS department doing 5 000 audits / semester pays $0 instead of $50-500 |
 | Vendor independence | No provider rug-pull / pricing-tier change breaks your CI |
 
@@ -224,8 +248,9 @@ talking to a different deployment. Examples:
 
 | Deployment | `api_url` | `model` |
 |---|---|---|
-| Ollama on your laptop | `http://localhost:11434/v1` | e.g. `qwen2.5:7b`, `llama3.1:8b` |
-| vLLM behind nginx in your DC | `https://llm.internal/v1` | e.g. `deepseek-v3-671b`, `llama-3.1-405b` |
+| Ollama on your laptop | `http://localhost:11434/v1` | e.g. `qwen2.5:7b`, `llama3.1:8b`, `mistral:7b`, `codestral:22b` |
+| **Mistral cloud (EU-sovereign)** | `https://api.mistral.ai/v1` | `codestral-latest`, `mistral-large-latest`, `mistral-small-latest` |
+| vLLM behind nginx in your DC | `https://llm.internal/v1` | e.g. `mistral-large-2`, `mixtral-8x22b`, `deepseek-v3-671b`, `llama-3.1-405b` |
 | Bank's on-prem cluster (full-size frontier model) | `https://gpu-cluster.bank.local/v1` | whatever the cluster team registers |
 | Air-gapped lab box | `http://192.168.x.x:8000/v1` | whatever's loaded |
 

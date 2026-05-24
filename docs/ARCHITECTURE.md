@@ -350,11 +350,12 @@ flowchart TB
     AnthropicSDK --> AnthCompat[Self-hosted Anthropic compat<br/>(VLLM, etc.)]
     
     OpenAISDK --> DeepSeek[DeepSeek<br/>(real validation done)]
+    OpenAISDK --> Mistral[Mistral / Codestral<br/>EU-sovereign frontier]
     OpenAISDK --> OpenRouter[OpenRouter]
     OpenAISDK --> Together[Together AI]
-    OpenAISDK --> Ollama[Local Ollama<br/>(Qwen, Llama, etc.)]
+    OpenAISDK --> Ollama[Local Ollama<br/>(Mistral / Qwen / Llama / ...)]
     OpenAISDK --> LMStudio[LM Studio]
-    OpenAISDK --> vLLM[vLLM / SGLang servers]
+    OpenAISDK --> vLLM[vLLM / SGLang servers<br/>(any open-weight model)]
 ```
 
 **Why this matters**:
@@ -391,9 +392,9 @@ This means three customer tiers, **same product**:
 
 | Tier | Typical deployment | Example models |
 |---|---|---|
-| Laptop | Ollama on macOS / Linux / Windows | qwen2.5-7b, llama3.1-8b, deepseek-r1-8b |
-| Mid-size org | vLLM on a workstation or 1-2 GPU server | qwen2.5-32b, llama3.1-70b |
-| **Enterprise (banks / defense / large telcos)** | **Multi-node GPU cluster with full-size frontier weights** | **DeepSeek-V3 671 B · Llama 3.1 405 B · Qwen 3 235 B · their own fine-tunes** |
+| Laptop | Ollama on macOS / Linux / Windows | qwen2.5-7b, llama3.1-8b, **mistral-7b**, **codestral-22b**, deepseek-r1-8b |
+| Mid-size org | vLLM on a workstation or 1-2 GPU server | qwen2.5-32b, llama3.1-70b, **mixtral-8x7b**, **mistral-small-22b** |
+| **Enterprise (banks / defense / large telcos)** | **Multi-node GPU cluster with full-size frontier weights** | **Mistral-Large-2 123 B · Mixtral 8x22B · DeepSeek-V3 671 B · Llama 3.1 405 B · Qwen 3 235 B · their own fine-tunes** |
 
 The enterprise tier deserves emphasis: **a bank with its own GPU
 cluster running a 671 B model gets the SAME revio experience as a
@@ -406,7 +407,8 @@ changes.
 | Student code review (FERPA) | Sending student work to a 3rd-party LLM is a frequent FERPA finding |
 | Patient-data tooling (HIPAA) | Any code touching PHI must stay in-network |
 | Bank / insurance code review | Internal IP + regulator audit trails — code can't leave the firewall, full-size models on private clusters required |
-| National AI sovereignty | Multiple jurisdictions now prohibit US-origin LLM for state work |
+| **EU AI sovereignty** | revio's primary market is Europe; **Mistral** (French, open-weight) is the natural answer for GDPR-bound customers who still want frontier model quality — either via `api.mistral.ai` or self-hosted via vLLM / Ollama. `codestral-22b` is code-specialized and a great default for European deployments. |
+| National AI sovereignty (others) | Multiple jurisdictions (China, Russia, etc.) similarly prohibit US-origin LLM for state work |
 | Industrial control (PLC + Verilog) | Air-gapped by policy; `plc` + `verilog` profiles are valuable here |
 | Cost at scale | A CS department doing 5 000 audits / semester pays $0 |
 | Vendor independence | No provider rug-pull or pricing-tier change can break a CI |
@@ -1196,7 +1198,7 @@ input_$/1M, output_$/1M)` covering:
 | DeepSeek | `deepseek-v4-pro`, `deepseek-v4-flash`, legacy `deepseek-chat` / `-reasoner` |
 | Anthropic | `claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5` |
 | OpenAI | `gpt-4o`, `gpt-4o-mini`, `gpt-4.1`, `o1` |
-| Mistral | `mistral-large`, `mistral-small` |
+| Mistral (EU-sovereign) | `mistral-large` (123B), `mistral-medium`, `mistral-small` (22B), `codestral` (code-specialized 22B), `ministral` (edge), `mixtral` (8x22B MoE) |
 | Local | `llama*`, `qwen*`, `ollama*` → `(0, 0)` (free) |
 
 Fuzzy match picks the longest substring hit — so `deepseek-v4-pro-0524`

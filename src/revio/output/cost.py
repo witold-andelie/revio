@@ -30,8 +30,14 @@ PRICING: dict[str, tuple[float, float]] = {
     "gpt-4o-mini":             (0.15, 0.60),
     "gpt-4.1":                 (2.5,  10.0),
     "o1":                      (15.0, 60.0),
-    # Mistral / Mixtral
-    "mistral-large":           (2.0,  6.0),
+    # Mistral / Mixtral — EU-sovereign open-weight family
+    "mistral-large":           (2.0,  6.0),          # frontier (123B)
+    "mistral-small":           (0.2,  0.6),          # 22B
+    "mistral-medium":          (0.4,  2.0),
+    "codestral":               (0.2,  0.6),          # code-specialized 22B
+    "ministral":               (0.04, 0.04),         # edge (3B / 8B)
+    "mixtral":                 (0.7,  0.7),          # 8x7B / 8x22B MoE
+    "mistral":                 (0.2,  0.6),          # generic fallback for mistral-*
     # Local (Ollama / llama.cpp) — assume free
     "llama":                   (0.0,  0.0),
     "qwen":                    (0.0,  0.0),

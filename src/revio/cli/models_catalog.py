@@ -66,12 +66,19 @@ _CURATED: dict[str, list[ModelEntry]] = {
         ModelEntry("claude-opus-4-5",   "gateway model"),
     ],
     "api.mistral.ai": [
-        ModelEntry("mistral-large-latest", "flagship"),
-        ModelEntry("mistral-small-latest", "cheap"),
+        ModelEntry("mistral-large-latest",   "EU-sovereign frontier (123B)"),
+        ModelEntry("mistral-medium-latest",  "balanced"),
+        ModelEntry("mistral-small-latest",   "22B, cheaper"),
+        ModelEntry("codestral-latest",       "code-specialized (recommended for revio)"),
+        ModelEntry("ministral-8b-latest",    "edge / on-device"),
+        ModelEntry("open-mixtral-8x22b",     "open-weight MoE — also self-hostable"),
     ],
     "localhost": [
-        ModelEntry("llama3.1:8b",  "via Ollama, free"),
-        ModelEntry("qwen2.5:7b",   "via Ollama, free"),
+        ModelEntry("llama3.1:8b",       "via Ollama, free"),
+        ModelEntry("qwen2.5:7b",        "via Ollama, free"),
+        ModelEntry("mistral:7b",        "via Ollama, free — EU-sovereign"),
+        ModelEntry("codestral:22b",     "via Ollama, free — code-specialized"),
+        ModelEntry("mixtral:8x7b",      "via Ollama, MoE — EU-sovereign"),
     ],
 }
 

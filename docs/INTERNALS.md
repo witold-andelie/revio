@@ -817,10 +817,11 @@ is the URL.
 [llm]
 provider = "openai_compat"
 api_url = "http://localhost:11434/v1"            # Ollama
+# api_url = "https://api.mistral.ai/v1"          # Mistral cloud (EU-sovereign)
 # api_url = "http://gpu-node.internal:8000/v1"   # vLLM in a DC
 # api_url = "https://bank-cluster.local/v1"      # enterprise cluster
 api_key = "unused"                                # or internal token
-model = "qwen2.5:7b"                              # or whatever /v1/models returns
+model = "qwen2.5:7b"                              # or 'codestral-latest', 'mistral-large-latest', etc.
 ```
 
 **File trace — what differs from cloud**:
