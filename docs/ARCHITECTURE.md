@@ -63,7 +63,8 @@ flowchart TB
     subgraph Ext["External integrations"]
         RAG["RAG · ChromaDB<br/>(company guidelines)"]
         SKILLS["Skills · Anthropic spec<br/>(progressive disclosure)"]
-        MCP["MCP client<br/>(Jira / wiki / etc.)"]
+        MCPC["MCP client<br/>(consumes Jira / wiki / etc.)"]
+        MCPS["MCP server<br/>(exposes revio to Claude Code / Cursor)"]
         HIST["Findings history · SQLite<br/>(cross-session diff)"]
     end
 
@@ -73,7 +74,8 @@ flowchart TB
     L3 -.calls tools.-> L1
     L3 -.calls tools.-> RAG
     L3 -.calls tools.-> SKILLS
-    L3 -.calls tools.-> MCP
+    L3 -.calls tools.-> MCPC
+    MCPS -.exposes.-> L3
     reflect --> HIST
 ```
 
@@ -874,7 +876,7 @@ competitor at the time of writing.
 | | Status | Notes |
 |---|---|---|
 | Layer 4 narrow demo (symbolic exec for one vuln class) | Skipped after re-evaluation | Diminishing returns vs other work |
-| MCP server (expose revio's tools to Claude Code / Cursor / etc.) | Deferred | 2 days; high strategic value for IDE-ecosystem integration |
+| MCP server (expose revio's tools to Claude Code / Cursor / etc.) | **Done** | 9 tools exposed via stdio; see §16 |
 | Pen-test on a real-world open-source repo | Open | Would validate the cost / accuracy claims |
 | GitHub Action / pre-commit hook | Open | Wrapper around `revio review` with `--format json` |
 | Per-finding human feedback loop | Open | RLHF-style improvement of confidence calibration |
@@ -891,3 +893,135 @@ competitor at the time of writing.
 - **"Pluggable LLM"** — Anthropic native + any OpenAI-compatible (DeepSeek $0.013 per audit / local Ollama / etc.)
 - **"Actually applies fixes"** — `dedup --fix` writes to filesystem with git-stash safety
 - **"University-ready"** — covers EE (PLC/Verilog/MATLAB/embedded C) + CS (mainstream langs); cites course syllabi via RAG
+
+---
+
+## 16. MCP — both directions
+
+revio sits inside the MCP (Model Context Protocol) ecosystem as both a
+**client** and a **server**. Two distinct integration paths, two
+different problems solved.
+
+### 16.1 Bidirectional flow
+
+```mermaid
+flowchart LR
+    subgraph Ext1["External MCP servers<br/>(Jira, Confluence, wiki, git platforms)"]
+        JIRA["mcp-server-atlassian-jira"]
+        WIKI["company_wiki MCP"]
+    end
+
+    subgraph Revio["revio process"]
+        AgentLoop["LangGraph agent<br/>(plan → react → reflect)"]
+        ClientMod["agent/mcp_client.py<br/>ClientSessionGroup"]
+        ServerMod["mcp_server/server.py<br/>FastMCP stdio"]
+    end
+
+    subgraph Hosts["External MCP hosts<br/>(Claude Code, Cursor, custom agents)"]
+        CC["Claude Code"]
+        CURSOR["Cursor IDE"]
+        OTHER["other LangGraph workflows"]
+    end
+
+    JIRA -- "stdio · tools/list, tools/call" --> ClientMod
+    WIKI -- "SSE · tools/list, tools/call" --> ClientMod
+    ClientMod -- "wraps as LangChain StructuredTool" --> AgentLoop
+
+    CC -- "stdio · tools/call revio_audit" --> ServerMod
+    CURSOR -- "stdio · tools/call revio_dedup" --> ServerMod
+    OTHER -- "stdio · tools/call revio_run_bandit" --> ServerMod
+    ServerMod -- "dispatches to runner.py / static analyzers" --> AgentLoop
+```
+
+### 16.2 revio AS A CLIENT — consuming other people's MCP servers
+
+**Why**: enterprises already have Jira / Confluence / wiki / git-platform
+MCP servers running. We don't want to write a one-off integration for each
+— MCP lets revio drop into the existing ecosystem.
+
+**How to wire it up** — add to `~/.config/revio/config.toml`:
+
+```toml
+[mcp.servers.jira]
+command = "uvx"
+args = ["mcp-server-atlassian-jira"]
+env = { ATLASSIAN_TOKEN = "$ATLASSIAN_TOKEN" }
+timeout = 5.0
+
+[mcp.servers.company_wiki]
+url = "https://wiki.internal/mcp"
+api_key_env = "WIKI_TOKEN"
+timeout = 10.0
+```
+
+**What happens at session start**:
+
+1. `runner.py` reads `config.mcp.servers`
+2. Each entry → `MCPServerConfig` → SDK `StdioServerParameters` or `SseServerParameters`
+3. `ClientSessionGroup` connects to all servers in parallel (per-server `asyncio.timeout`)
+4. For each connected server, its tools are pulled and wrapped as LangChain `StructuredTool` with name `mcp_<server>_<tool>` (so `jira.list_tickets` becomes `mcp_jira_list_tickets`)
+5. Those tools are merged into the agent's tool list — visible alongside `read_file`, `report_finding`, etc.
+
+**Failure mode**: if a server times out or crashes, the agent proceeds
+without it. The `mcp_connected` stream event tells the user which servers
+made it. No silent fallback to "it just works".
+
+**Code**: `src/revio/agent/mcp_client.py` (~256 LOC).
+
+### 16.3 revio AS A SERVER — exposing revio to other agents
+
+**Why**: revio's review depth is valuable inside other agentic workflows.
+A Claude Code session debugging a bug should be able to ask revio "is
+this function duplicated anywhere?" without bouncing to a shell.
+
+**How to wire it up** — register revio in your MCP host's config.
+For Claude Code (`~/.config/claude-code/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "revio": {
+      "command": "revio",
+      "args": ["mcp-server"]
+    }
+  }
+}
+```
+
+This launches `revio mcp-server` (stdio) on demand. The host then sees 9
+tools.
+
+**The 9 tools, by cost class**:
+
+| Tool | Cost | Use case |
+|---|---|---|
+| `revio_audit(repo_path, profile, budget)` | LLM, ~40s | Host agent wants a full security scan |
+| `revio_review(repo_path, base_ref, profile, budget)` | LLM, ~30s | Host agent reviewing a diff before commit |
+| `revio_dedup(repo_path, profile, budget)` | LLM, ~40s | Host agent looking for AI redundancy; returns findings + patch operations as data |
+| `revio_run_bandit(path)` | Layer-2, ~2s | Cheap Python security spot-check |
+| `revio_run_oxlint(path)` | Layer-2, ~1s | Cheap JS/TS lint |
+| `revio_run_cppcheck(path)` | Layer-2, ~3s | Cheap C/C++ analysis |
+| `revio_search_guidelines(repo_path, query, k)` | Embedding-only | RAG query into org docs |
+| `revio_list_profiles()` | Instant | Discovery |
+| `revio_detect_profile(repo_path)` | Instant | Auto-detect best profile for a repo |
+
+**Two design choices worth justifying**:
+
+1. **`revio_dedup` does NOT apply patches.** It returns patch operations
+   as JSON; the host agent decides whether to write them. Why: the host
+   agent already has filesystem tools and a permission model — duplicating
+   that inside revio's server would create a confusing two-layer "who
+   asked first?" UX. Cleaner boundary: revio reports, host mutates.
+
+2. **Per-request budget is capped at 30 tool calls.** Even if a hostile
+   or buggy client sends `budget=99999`, we silently clamp. Prevents
+   credit-burning attacks via a misconfigured MCP host.
+
+**Code**: `src/revio/mcp_server/server.py` (~256 LOC, FastMCP-based).
+
+### 16.4 Why both directions matter (slide bullet)
+
+> "revio is in the MCP ecosystem on **both sides** of the protocol —
+> consuming your wiki/jira to ground its findings, and exposing its
+> review pipelines to whatever IDE-side agent your team already uses.
+> This is what an integration story looks like in 2026."

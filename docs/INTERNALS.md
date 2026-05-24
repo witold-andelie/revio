@@ -476,6 +476,83 @@ agent/runner.py:run_agent():
 
 ---
 
+## 8b. MCP server: exposing revio to other agents
+
+**Symptom**: external host (Claude Code / Cursor) can't see revio's
+tools, or `revio_audit` errors when called via MCP
+
+**Entry point**: `revio mcp-server` CLI subcommand
+  → `cli/main.py:mcp_server()`
+  → `mcp_server/server.py:run_stdio()`
+
+**File trace**:
+```
+cli/main.py:mcp_server() typer command
+   ↓
+   from ..mcp_server import run_stdio
+   ↓
+   run_stdio():
+      logging.basicConfig(stream=sys.stderr, level=WARNING)
+         ★ CRITICAL: stdout is JSON-RPC, must NOT receive log output
+      ↓
+      server = build_server()  → FastMCP("revio", instructions=...)
+         For each tool: @mcp.tool(name=..., description=...) decorator
+         registers a callable in mcp._tool_manager
+      ↓
+      server.run("stdio")
+         Blocks on the MCP SDK's stdio_server() loop, reading JSON-RPC
+         from stdin and writing responses to stdout.
+
+External host calls revio_audit(repo_path, profile, budget):
+   ↓
+   mcp_server/server.py:revio_audit() handler (async)
+   ↓
+   _run_pipeline("audit", repo_path, profile=profile, budget=budget)
+      cfg = load_config()
+      cfg.agent.max_tool_calls = min(budget, 30)  ← per-request budget clamp
+      ↓
+      from ..agent.runner import run_agent
+      report = await run_agent(mode="audit", ..., on_event=noop)
+         ↑ Same code path as `revio audit` CLI. The MCP server is a thin
+         wrapper around runner.py.
+      ↓
+   return json.dumps(report.model_dump(mode="json"), indent=2, default=str)
+      ★ For revio_dedup: include_patches=True keeps "patches" key in JSON.
+         For revio_audit/review: patches stripped (no edit ops expected).
+
+External host calls revio_run_bandit(path):
+   ↓
+   mcp_server/server.py:revio_run_bandit() handler (sync — fast path)
+   ↓
+   _run_static_analyzer("bandit", path)
+      runner = BanditRunner()
+      findings = runner.scan_to_findings(abs_path, repo_root=repo_root)
+      ↑ DIRECTLY invokes Layer 2 — no LLM, no agent loop.
+   ↓
+   return json.dumps({"analyzer": "bandit", "count": N, "findings": [...]})
+```
+
+**Common failures**:
+- **"Server crashed during startup"**: usually a print() somewhere
+  contaminating stdout. Audit your new code — stdout is JSON-RPC only.
+  Logs/diagnostics go to stderr via logging.
+- **"Tool returned malformed JSON"**: `report.model_dump(mode="json")`
+  must use the json mode (handles datetime/Path/enums). Forgetting
+  `mode="json"` returns raw Python objects that json.dumps then chokes on.
+- **"Budget seems ignored"**: per-request budget is clamped to
+  `max(1, min(budget, 30))` — a hostile client cannot bypass this.
+- **"Bandit not installed" error returned via MCP**: graceful — the
+  analyzer wrapper catches `NotInstalledError` and serializes it into
+  the JSON response. The MCP host sees an error key, not a crash.
+
+**The boundary rule (don't break it)**: revio's MCP server NEVER applies
+patches. `revio_dedup` returns patch operations as data. The host agent
+decides what to do with them. If you're tempted to add a `revio_apply_patch`
+tool — don't. The host already has filesystem tools; adding mutation here
+creates a confusing two-layer permission model.
+
+---
+
 ## 9. PatchApplier: --fix internals
 
 **Symptom**: patch refused with "old_content doesn't match"
