@@ -54,6 +54,32 @@ function Invoke-Probe {
     finally { $ErrorActionPreference = $prev }
 }
 
+# Stream a native command's stdout+stderr through Write-Host without
+# letting stderr writes trip ErrorActionPreference=Stop. Filter is an
+# optional regex to suppress noise.
+function Invoke-NativeStream {
+    param(
+        [scriptblock]$Body,
+        [string]$Prefix = '    ',
+        [string]$Filter = $null
+    )
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $Body 2>&1 | ForEach-Object {
+            $line = $_.ToString()
+            if (-not $Filter -or $line -match $Filter) {
+                Write-Host "$Prefix$line" -ForegroundColor DarkGray
+            }
+        }
+        return $LASTEXITCODE
+    } catch {
+        return 1
+    } finally {
+        $ErrorActionPreference = $prev
+    }
+}
+
 function Ask-YesNo($prompt, $default = 'n') {
     $hint = if ($default -eq 'y') { '[Y/n]' } else { '[y/N]' }
     while ($true) {
@@ -94,12 +120,13 @@ if (-not $python) {
     Warn "No Python >= $PyMinMajor.$PyMinMinor found."
     if (Get-Command winget -ErrorAction SilentlyContinue) {
         if (Ask-YesNo "Install Python 3.12 via winget now?" 'y') {
-            winget install --silent --id Python.Python.3.12 --accept-source-agreements --accept-package-agreements
+            Invoke-NativeStream { winget install --silent --id Python.Python.3.12 --accept-source-agreements --accept-package-agreements } | Out-Null
             $python = 'python'
         } else { Die "Install Python from https://www.python.org/downloads/ and re-run." }
     } else { Die "winget not available. Install Python from https://www.python.org/downloads/ and re-run." }
 }
-$pyver = & $python -c "import sys; print('%d.%d.%d' % sys.version_info[:3])"
+$pyver = (& $python -c "import sys; print('%d.%d.%d' % sys.version_info[:3])" 2>$null)
+if (-not $pyver) { $pyver = '?' }
 Ok "$python ($pyver)"
 
 # === [2/7] Git ==============================================================
@@ -108,7 +135,7 @@ Stage "Checking git"
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     if (Get-Command winget -ErrorAction SilentlyContinue) {
         if (Ask-YesNo "Install git via winget?" 'y') {
-            winget install --silent --id Git.Git --accept-source-agreements --accept-package-agreements
+            Invoke-NativeStream { winget install --silent --id Git.Git --accept-source-agreements --accept-package-agreements } | Out-Null
         } else { Die "git required. Install from https://git-scm.com/download/win" }
     } else { Die "git not found. Install from https://git-scm.com/download/win" }
 }
@@ -158,32 +185,28 @@ Ok "will install to: $InstallDir"
 Stage "Cloning repository"
 if (Test-Path (Join-Path $InstallDir '.git')) {
     Info "existing checkout found, pulling latest"
-    git -C $InstallDir fetch --progress origin 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
-    git -C $InstallDir reset --hard origin/main | Out-Null
+    $rc = Invoke-NativeStream { git -C $InstallDir fetch --progress origin }
+    Invoke-Probe { git -C $InstallDir reset --hard origin/main } | Out-Null
+    if ($rc -ne 0) { Die "git fetch failed (rc=$rc)" }
     Ok "updated to latest main"
 } else {
     New-Item -ItemType Directory -Force -Path (Split-Path $InstallDir) | Out-Null
     # --progress makes git emit byte/object counters to stderr; visible to user.
-    git clone --progress --depth 1 $RepoUrl $InstallDir 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+    $rc = Invoke-NativeStream { git clone --progress --depth 1 $RepoUrl $InstallDir }
+    if ($rc -ne 0) { Die "git clone failed (rc=$rc)" }
     Ok "cloned"
 }
 
 # === [5/7] venv + core install =============================================
 
 Stage "Creating virtualenv and installing core (~150 MB, 1-2 minutes)"
-& $python -m venv (Join-Path $InstallDir '.venv')
+Invoke-Probe { & $python -m venv (Join-Path $InstallDir '.venv') } | Out-Null
 $vpy = Join-Path $InstallDir '.venv\Scripts\python.exe'
-& $vpy -m pip install --upgrade pip 2>&1 | ForEach-Object {
-    if ($_ -match 'Downloading|Installing|Successfully') { Write-Host "    $_" -ForegroundColor DarkGray }
-}
+Invoke-NativeStream { & $vpy -m pip install --upgrade pip } '    ' 'Downloading|Installing|Successfully' | Out-Null
 
 # Core: agent runtime + CLI + base profiles. NO RAG, NO heavy ML deps.
-# pip's native progress bar is visible since we don't pass --quiet.
-& $vpy -m pip install -e "$InstallDir[js,plc,python,languages]" 2>&1 | ForEach-Object {
-    if ($_ -match 'Downloading|Installing|Successfully|error') {
-        Write-Host "    $_" -ForegroundColor DarkGray
-    }
-}
+$rc = Invoke-NativeStream { & $vpy -m pip install -e "$InstallDir[js,plc,python,languages]" } '    ' 'Downloading|Installing|Successfully|error|ERROR'
+if ($rc -ne 0) { Die "core install failed (rc=$rc)" }
 Ok "core installed"
 
 # === [6/7] Optional extras ==================================================
@@ -199,12 +222,9 @@ Write-Host "    --- RAG (search your coding guidelines as context) ---" -Foregro
 Info "Adds chromadb + sentence-transformers + torch (~1 GB on disk)."
 Info "If you won't index company guidelines, skip this. Can be added later."
 if (Ask-YesNo "Install RAG dependencies now?" 'n') {
-    & $vpy -m pip install -e "$InstallDir[rag]" 2>&1 | ForEach-Object {
-        if ($_ -match 'Downloading|Installing|Successfully|error') {
-            Write-Host "    $_" -ForegroundColor DarkGray
-        }
-    }
-    Ok "RAG extras installed"
+    $rc = Invoke-NativeStream { & $vpy -m pip install -e "$InstallDir[rag]" } '    ' 'Downloading|Installing|Successfully|error|ERROR'
+    if ($rc -eq 0) { Ok "RAG extras installed" }
+    else { Warn "RAG install failed (rc=$rc) - revio works fine without it" }
 } else {
     Info "skipping RAG. Add later: $vpy -m pip install -e ${InstallDir}[rag]"
 }
