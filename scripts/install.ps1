@@ -342,6 +342,16 @@ $metaPath = Join-Path $InstallDir 'install-metadata.json'
 
 # === Finale =================================================================
 
+# Refresh the CURRENT shell's $env:Path so the user can run `revio`
+# immediately, without opening a new PowerShell. PATH change via
+# [Environment]::SetEnvironmentVariable('User') only propagates to
+# NEW processes — existing shells keep the old PATH cached at startup.
+try {
+    $env:Path = `
+        [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + `
+        [Environment]::GetEnvironmentVariable('Path','User')
+} catch { }
+
 $total = '{0:mm\:ss}' -f ((Get-Date) - $ScriptStart)
 Write-Host ""
 Write-Host "================================================================" -ForegroundColor Green
@@ -352,10 +362,12 @@ Write-Host "  Location: $InstallDir"
 Write-Host "  Launcher: $BinDir\revio.cmd  (in PATH)"
 Write-Host ""
 Write-Host "  NEXT STEPS:" -ForegroundColor Cyan
-Write-Host "    1. OPEN A NEW PowerShell window (so the updated PATH is loaded)"
-Write-Host "    2. cd into any code folder you want to review"
-Write-Host "    3. Run:  " -NoNewline; Write-Host "revio" -ForegroundColor Cyan -NoNewline; Write-Host " (interactive REPL)"
+Write-Host "    1. cd into any code folder you want to review"
+Write-Host "    2. Run:  " -NoNewline; Write-Host "revio" -ForegroundColor Cyan -NoNewline; Write-Host " (interactive REPL)"
 Write-Host "       or:  " -NoNewline; Write-Host "revio audit ." -ForegroundColor Cyan -NoNewline; Write-Host "  (one-shot full-repo scan)"
+Write-Host ""
+Write-Host "  [The PATH was refreshed for this PowerShell window, so 'revio'" -ForegroundColor DarkGray
+Write-Host "   works immediately. New windows pick it up automatically.]" -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "  Uninstall later:" -ForegroundColor DarkGray
 Write-Host "    iwr https://raw.githubusercontent.com/witold-andelie/revio/main/scripts/uninstall.ps1 | iex"
