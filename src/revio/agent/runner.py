@@ -80,6 +80,7 @@ class _TokenAccountant:
         from ..output.cost import estimate_cost_usd
 
         return {
+            "model": self.model,
             "delta_input": delta_in,
             "delta_output": delta_out,
             "total_input": self.input_tokens,

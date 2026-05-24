@@ -377,7 +377,7 @@ def _cmd_budget(arg: str, cfg: Config, state: dict) -> bool:
 
 
 def _cmd_cost(arg: str, cfg: Config, state: dict) -> bool:
-    from ..output.cost import format_count, format_cost
+    from ..output.cost import format_count, format_cost, is_priced
 
     tin = state.get("session_tokens_in", 0)
     tout = state.get("session_tokens_out", 0)
@@ -390,7 +390,8 @@ def _cmd_cost(arg: str, cfg: Config, state: dict) -> bool:
     _console.print(f"  [dim]LLM calls[/]  {calls}")
     _console.print(f"  [dim]input[/]      {format_count(tin)} tokens")
     _console.print(f"  [dim]output[/]     {format_count(tout)} tokens")
-    _console.print(f"  [dim]est. cost[/]  [bold]{format_cost(cost)}[/]")
+    if is_priced(cfg.llm.model):
+        _console.print(f"  [dim]est. cost[/]  [bold]{format_cost(cost)}[/]")
     return True
 
 

@@ -59,6 +59,13 @@ def estimate_cost_usd(model: str, input_tokens: int, output_tokens: int) -> floa
     return (input_tokens * in_rate + output_tokens * out_rate) / 1_000_000
 
 
+def is_priced(model: str) -> bool:
+    """True if we have pricing data for this model — used by the renderer
+    to decide whether to show a cost figure at all. For unknown models we
+    suppress the $ amount entirely rather than misleading the user with $0.00."""
+    return _resolve_pricing(model) != (0.0, 0.0)
+
+
 def format_cost(usd: float) -> str:
     """Pretty-print a USD cost figure with appropriate precision."""
     if usd <= 0:

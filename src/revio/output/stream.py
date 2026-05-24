@@ -173,7 +173,7 @@ class StreamRenderer:
 
     def _on_llm_usage(self, p: dict) -> None:
         """Per-LLM-call token accounting — real numbers from usage_metadata."""
-        from .cost import format_count, format_cost
+        from .cost import format_count, format_cost, is_priced
 
         delta_in = int(p.get("delta_input", 0) or 0)
         delta_out = int(p.get("delta_output", 0) or 0)
@@ -182,17 +182,21 @@ class StreamRenderer:
         self._llm_calls = int(p.get("call_count", self._llm_calls + 1))
         self._last_throughput = float(p.get("throughput_tps", 0.0) or 0.0)
         self._est_cost = float(p.get("est_cost_usd", self._est_cost))
+        model = str(p.get("model", "") or "")
 
         # If we got zero from the provider, stay silent — no point flashing 0s
         if delta_in == 0 and delta_out == 0:
             return
 
         tps = f"{self._last_throughput:.0f} tok/s" if self._last_throughput > 0 else "—"
+        # Suppress $ figure entirely for models we don't have pricing for —
+        # better silent than misleading.
+        cost_part = f" · {format_cost(self._est_cost)}" if is_priced(model) else ""
         self.console.print(
             f"    [dim]·[/] [dim cyan]tokens[/] "
             f"+{format_count(delta_in)} in, +{format_count(delta_out)} out "
             f"[dim](Σ {format_count(self._tokens_in)} / {format_count(self._tokens_out)} · "
-            f"{tps} · {format_cost(self._est_cost)})[/]",
+            f"{tps}{cost_part})[/]",
             highlight=False,
         )
 
@@ -295,13 +299,20 @@ class StreamRenderer:
             f"{report.get('model_used', '')}"
         )
         if tok_in > 0 or tok_out > 0:
+            from .cost import is_priced
+
             avg_tps = (tok_out / duration) if duration > 0 else 0.0
+            cost_part = (
+                f" · [bold]{format_cost(cost)}[/]"
+                if is_priced(report.get("model_used", ""))
+                else ""
+            )
             self.console.print(
                 f"  [dim]tokens:[/]  {format_count(tok_in)} in · "
                 f"{format_count(tok_out)} out · "
                 f"{calls} LLM call(s) · "
-                f"avg {avg_tps:.0f} tok/s · "
-                f"[bold]{format_cost(cost)}[/]"
+                f"avg {avg_tps:.0f} tok/s"
+                f"{cost_part}"
             )
         self.console.print()
 
@@ -360,14 +371,15 @@ def format_as_markdown(report) -> str:
     lines.append(f"- Duration: {report.duration_seconds:.1f}s")
     lines.append(f"- Findings: {len(report.findings)}")
     if report.total_input_tokens > 0 or report.total_output_tokens > 0:
-        from .cost import format_count, format_cost
+        from .cost import format_count, format_cost, is_priced
 
         lines.append(
             f"- Tokens: {format_count(report.total_input_tokens)} in / "
             f"{format_count(report.total_output_tokens)} out "
             f"({report.llm_call_count} LLM call(s))"
         )
-        lines.append(f"- Estimated cost: {format_cost(report.est_cost_usd)}")
+        if is_priced(report.model_used):
+            lines.append(f"- Estimated cost: {format_cost(report.est_cost_usd)}")
     lines.append("")
 
     if report.systemic_observations:
