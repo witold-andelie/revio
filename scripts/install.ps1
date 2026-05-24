@@ -235,7 +235,7 @@ function Install-Analyzer {
         $rc = Invoke-Probe { scoop install $ScoopId }
         if ($rc -eq 0) { Ok "$Name installed via scoop"; return $true } else { Warn "$Name scoop install failed (rc=$rc)"; return $false }
     }
-    if ($ManualHint) { Warn "$Name: $ManualHint" } else { Warn "$Name: no compatible package manager; revio falls back gracefully" }
+    if ($ManualHint) { Warn "${Name}: $ManualHint" } else { Warn "${Name}: no compatible package manager; revio falls back gracefully" }
     return $false
 }
 
