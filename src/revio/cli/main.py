@@ -677,6 +677,24 @@ def skills_activated():
         _console.print(f"    [bold]{act.skill.name}[/] — matched: {', '.join(act.matched_rules)}")
 
 
+# --- MCP server subcommand ----------------------------------------------------
+
+
+@app.command(
+    "mcp-server",
+    help=(
+        "Start revio as an MCP server (stdio). External agents (Claude Code, "
+        "Cursor, etc.) can then call revio_audit / revio_dedup / revio_review "
+        "and individual static analyzers. Logs go to stderr; stdout is the "
+        "JSON-RPC channel."
+    ),
+)
+def mcp_server():
+    from ..mcp_server import run_stdio
+
+    run_stdio()
+
+
 # --- main ---------------------------------------------------------------------
 
 

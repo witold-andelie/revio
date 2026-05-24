@@ -274,6 +274,47 @@ revio's built-in toolkit.
 Failed servers don't abort the session — they're listed in the stream
 output and the agent proceeds without their tools.
 
+### revio as an MCP server
+
+revio is also an **MCP server** — other agents (Claude Code, Cursor, custom
+LangGraph workflows) can call revio's pipelines as tools:
+
+```bash
+revio mcp-server               # starts stdio MCP server, blocks
+```
+
+Tools exposed:
+
+| Tool | Purpose | Cost |
+|---|---|---|
+| `revio_audit(repo_path, profile, budget)` | Full-repo audit | LLM (~40s) |
+| `revio_review(repo_path, base_ref, profile, budget)` | Diff review | LLM (~30s) |
+| `revio_dedup(repo_path, profile, budget)` | Find AI redundancy + patches | LLM (~40s) |
+| `revio_run_bandit(path)` | Python security scan | Layer 2 only |
+| `revio_run_oxlint(path)` | JS/TS lint | Layer 2 only |
+| `revio_run_cppcheck(path)` | C/C++ analysis | Layer 2 only |
+| `revio_search_guidelines(repo_path, query)` | RAG query | Embedding only |
+| `revio_list_profiles()` | Discovery | Instant |
+| `revio_detect_profile(repo_path)` | Auto-detect best profile | Instant |
+
+To register with Claude Code, add to `~/.config/claude-code/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "revio": {
+      "command": "revio",
+      "args": ["mcp-server"]
+    }
+  }
+}
+```
+
+The MCP server deliberately does NOT expose `--fix` (patch application).
+It returns patch *operations* via `revio_dedup` — the host agent
+inspects them and decides whether/how to apply, keeping the security
+model clean: revio's server only reports, never mutates.
+
 ---
 
 ## Interactive REPL
