@@ -800,6 +800,163 @@ agent/llm.py:make_llm(config, max_tokens):
 - **Connection times out**: wrong `api_url`. OpenAI-compat usually needs
   `/v1` suffix; check provider docs.
 
+### 11b. Local-LLM routing (Ollama / vLLM / on-prem cluster)
+
+**Symptom**: revio configured for a local server but calls fail / hang /
+return junk; `/model` picker shows nothing; `/cost` shows `$0.00` for a
+paid cloud model
+
+**Mental model**: a local LLM endpoint that speaks
+`POST /v1/chat/completions` is, from revio's point of view, **identical
+to DeepSeek or OpenRouter** — same code path (`_make_openai` → ChatOpenAI),
+same streaming, same usage_metadata extraction. The only thing different
+is the URL.
+
+**Config shape** (any of these is valid):
+```toml
+[llm]
+provider = "openai_compat"
+api_url = "http://localhost:11434/v1"            # Ollama
+# api_url = "http://gpu-node.internal:8000/v1"   # vLLM in a DC
+# api_url = "https://bank-cluster.local/v1"      # enterprise cluster
+api_key = "unused"                                # or internal token
+model = "qwen2.5:7b"                              # or whatever /v1/models returns
+```
+
+**File trace — what differs from cloud**:
+```
+agent/llm.py:_make_openai(config, ...)
+   ↓
+   ChatOpenAI(model=config.llm.model,
+              api_key=config.llm.resolve_api_key(),
+              base_url=config.llm.api_url)
+   ↑ Same code path as DeepSeek / OpenRouter / any other openai_compat.
+   ↑ The local server doesn't care that the "api_key" is the string
+     "unused" — most local runtimes ignore the header.
+   ↓
+Stream events flow identically:
+   - on_chat_model_stream → chunks parsed by _chunk_to_text
+   - on_chat_model_end → usage_metadata extracted by _TokenAccountant
+      ★ Local servers (Ollama, vLLM) DO populate usage_metadata
+        following the OpenAI standard. We tested this. Token counts
+        are real.
+      ★ For older / non-standard local servers, fallback to
+        response_metadata.token_usage (prompt_tokens / completion_tokens)
+        — see §14 (Token meter).
+```
+
+**Model discovery — `/model` REPL command**:
+```
+cli/models_catalog.py:discover_from_endpoint(api_url, api_key)
+   url = api_url.rstrip('/') + '/v1/models' (or just /models if /v1 in URL)
+   GET <url> with Authorization: Bearer <key>
+      ★ Ollama responds with {data: [{id: "qwen2.5:7b", ...}, ...]}
+        — exactly the OpenAI format. Live discovery just works.
+      ★ vLLM same.
+      ★ llama.cpp server: also OpenAI-format /v1/models endpoint.
+      ★ TGI (HuggingFace Text Generation Inference): /v1/models supported
+        in recent versions.
+   Returns ModelEntry(name=id, source='discovered').
+```
+
+**Cost gating**: `output/cost.py:_resolve_pricing` matches
+`llama`/`qwen`/`ollama` substrings to `(0, 0)` — explicitly free, the
+`$` figure displays as `$0.00`. For an arbitrary local model name that
+doesn't match those substrings (e.g. `internal-tuned-model-v3`),
+`is_priced()` returns False and the `$` segment is suppressed entirely
+(see §14). Token counts always display — those come from the API's
+real response, not pricing math.
+
+**Common failures**:
+- **Connection refused**: local server isn't running. `curl http://...:.../v1/models`
+  manually to verify.
+- **`/model` picker empty for local server**: server doesn't expose
+  `/v1/models`. Falls back to curated; if the api_url doesn't match a
+  curated substring (likely for private deployments), the picker shows
+  empty. Workaround: use `/model <name>` directly. Long-term: add a
+  curated entry keyed by the org's api_url substring.
+- **All token counts zero**: server doesn't populate `usage_metadata`
+  AND doesn't populate `response_metadata.token_usage`. Some older
+  llama.cpp server versions do this. Update the server or accept that
+  token tracking won't work for that deployment.
+- **Streaming hangs / very slow first token**: local server is
+  CPU-bound and slow to load weights on first call. Pre-warm with a
+  dummy request before running `revio audit`.
+- **Wrong findings from a 7-8B model**: small models reason worse on
+  cross-finding patterns. revio's grounding validator still catches
+  hallucinated file paths, but the LLM's hypothesis lines may be
+  shallow. Reach for a 14-32B or larger model for production.
+- **"$0.00" appearing on a paid cloud model**: model name didn't fuzzy-
+  match any PRICING entry, so `_resolve_pricing` returned (0, 0). Add
+  the entry to PRICING or accept the suppressed `$` (see §14).
+
+**Key invariant**: revio's local-LLM support has NO special-case code
+paths. Everything goes through the same `_make_openai` → ChatOpenAI →
+stream / usage / cost. If you find yourself writing
+`if provider == "ollama":` somewhere, you've made a mistake — that's
+exactly what we're avoiding.
+
+---
+
+## 11c. Verilator wrapper (Verilog Layer 2)
+
+**Symptom**: `run_verilator` returns no findings on a clearly buggy
+file; bit-width / latch warnings missing
+
+**File trace**:
+```
+agent/lint_tools.py:make_verilator_tool(ctx) → @tool('run_verilator')
+   ↓ user / agent calls it with relative_path
+   ↓ ctx.verilator → lazy-builds VerilatorRunner (None if binary missing)
+   ↓
+layers/static/verilator.py:VerilatorRunner.scan(target):
+   - If target is a dir: expand to .v / .vh / .sv / .svh files (recursive)
+   - subprocess: ['verilator', '--lint-only', '-Wall', <files>]
+   - ★ Verilator emits diagnostics on STDERR, not stdout (this is the
+     #1 gotcha when writing wrappers for it).
+   - Parse each stderr line via _LINE_RE:
+        %(Error|Warning|Info)(-RULE_TAG)?: file:line:col: message
+   - Returns list[VerilatorDiagnostic]
+```
+
+**Severity / category mapping** (`_map_category`):
+```
+Synthesis-correctness (survive into silicon) → POTENTIAL_BUG:
+  WIDTH / WIDTHEXPAND / WIDTHTRUNC / WIDTHCONCAT (bit-width)
+  CASEINCOMPLETE / CASEX / CASEOVERLAP          (latch-inferring case)
+  BLKSEQ / BLKANDNBLK                            (blocking in sequential)
+  LATCH                                          (inferred combinational latch)
+  MULTIDRIVEN / MULTIDRIVE                       (multi-driven nets)
+  ASYNC / ASYNCBR                                (async logic / CDC)
+  UNDRIVEN / PINMISSING / PINNOTFOUND            (connectivity)
+  STMTDLY / INFINITELOOP                         (simulation hazards)
+  REALCVT                                        (silent type conversion)
+
+Cosmetic → CODE_STYLE:
+  UNUSED / UNUSEDPARAM / UNUSEDSIGNAL
+  DECLFILENAME                                   (filename ≠ module)
+  EOFNEWLINE
+  VARHIDDEN
+```
+
+**Common failures**:
+- **Empty result on a known-buggy file**: verilator parse error came
+  first and aborted later passes. Run `verilator --lint-only <file>`
+  manually to see the parse error; usually fixable by adding the right
+  `-I<include-dir>` (TODO: revio doesn't pass include dirs yet — feed
+  them via REVIO_VERILATOR_BIN wrapper script if needed).
+- **VHDL files (.vhd / .vhdl) get no findings**: by design — verilator
+  is Verilog-only. VHDL routes to the LLM-only fallback (no profile).
+- **Same finding emitted N times for an N-include file**: verilator
+  re-emits warnings for each instantiation. revio doesn't dedupe yet
+  — manifests as noise on large repos. Workaround: lower `-Wall` to a
+  narrower set via `REVIO_VERILATOR_BIN` env pointing at a wrapper
+  script.
+- **"Filename does not match module name" noise**: that's the
+  DECLFILENAME warning; treated as CODE_STYLE (low priority). If your
+  project deliberately mixes module-per-file boundaries, this is
+  cosmetic and can be ignored.
+
 ---
 
 ## 12. Streaming / output
