@@ -145,7 +145,11 @@ def run_repl():
         "profile": cfg.profile.default,
         "budget": cfg.agent.max_tool_calls,
         "cwd": Path.cwd().resolve(),
-        "session_tokens": 0,
+        # Token accounting across all NL queries in this REPL session
+        "session_tokens_in": 0,
+        "session_tokens_out": 0,
+        "session_cost_usd": 0.0,
+        "session_llm_calls": 0,
     }
 
     session = PromptSession(
@@ -321,8 +325,20 @@ def _cmd_budget(arg: str, cfg: Config, state: dict) -> bool:
 
 
 def _cmd_cost(arg: str, cfg: Config, state: dict) -> bool:
-    _console.print(f"  [dim]session tokens (approx):[/] {state['session_tokens']}")
-    _console.print(f"  [dim](token accounting is approximate in M1)[/]")
+    from ..output.cost import format_count, format_cost
+
+    tin = state.get("session_tokens_in", 0)
+    tout = state.get("session_tokens_out", 0)
+    cost = state.get("session_cost_usd", 0.0)
+    calls = state.get("session_llm_calls", 0)
+    if tin == 0 and tout == 0:
+        _console.print("  [dim](no LLM calls yet this REPL session)[/]")
+        return True
+    _console.print(f"  [dim]model[/]      {cfg.llm.model}")
+    _console.print(f"  [dim]LLM calls[/]  {calls}")
+    _console.print(f"  [dim]input[/]      {format_count(tin)} tokens")
+    _console.print(f"  [dim]output[/]     {format_count(tout)} tokens")
+    _console.print(f"  [dim]est. cost[/]  [bold]{format_cost(cost)}[/]")
     return True
 
 
@@ -400,7 +416,7 @@ def _handle_nl_input(line: str, cfg: Config, state: dict) -> None:
 
     renderer = StreamRenderer(_console)
     try:
-        run_agent_sync(
+        report = run_agent_sync(
             mode=intent,
             repo_path=str(repo_path),
             target_ref=target_ref,
@@ -408,6 +424,11 @@ def _handle_nl_input(line: str, cfg: Config, state: dict) -> None:
             config=run_cfg,
             on_event=renderer.handle,
         )
+        # Carry forward per-session token totals so /cost is accurate
+        state["session_tokens_in"] = state.get("session_tokens_in", 0) + report.total_input_tokens
+        state["session_tokens_out"] = state.get("session_tokens_out", 0) + report.total_output_tokens
+        state["session_cost_usd"] = state.get("session_cost_usd", 0.0) + report.est_cost_usd
+        state["session_llm_calls"] = state.get("session_llm_calls", 0) + report.llm_call_count
     except KeyboardInterrupt:
         _console.print("\n[yellow]Investigation interrupted.[/]")
     except Exception as e:

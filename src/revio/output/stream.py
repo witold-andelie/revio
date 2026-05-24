@@ -51,6 +51,12 @@ class StreamRenderer:
         self._in_llm_stream = False
         self._token_buffer: list[str] = []
         self._last_node: str | None = None
+        # Token meter: cumulative + last-call snapshot for /cost and footer
+        self._tokens_in = 0
+        self._tokens_out = 0
+        self._llm_calls = 0
+        self._last_throughput = 0.0
+        self._est_cost = 0.0
 
     # --- Public entry point ---
 
@@ -165,6 +171,31 @@ class StreamRenderer:
         self._flush_llm_tokens()
         self._in_llm_stream = False
 
+    def _on_llm_usage(self, p: dict) -> None:
+        """Per-LLM-call token accounting — real numbers from usage_metadata."""
+        from .cost import format_count, format_cost
+
+        delta_in = int(p.get("delta_input", 0) or 0)
+        delta_out = int(p.get("delta_output", 0) or 0)
+        self._tokens_in = int(p.get("total_input", self._tokens_in))
+        self._tokens_out = int(p.get("total_output", self._tokens_out))
+        self._llm_calls = int(p.get("call_count", self._llm_calls + 1))
+        self._last_throughput = float(p.get("throughput_tps", 0.0) or 0.0)
+        self._est_cost = float(p.get("est_cost_usd", self._est_cost))
+
+        # If we got zero from the provider, stay silent — no point flashing 0s
+        if delta_in == 0 and delta_out == 0:
+            return
+
+        tps = f"{self._last_throughput:.0f} tok/s" if self._last_throughput > 0 else "—"
+        self.console.print(
+            f"    [dim]·[/] [dim cyan]tokens[/] "
+            f"+{format_count(delta_in)} in, +{format_count(delta_out)} out "
+            f"[dim](Σ {format_count(self._tokens_in)} / {format_count(self._tokens_out)} · "
+            f"{tps} · {format_cost(self._est_cost)})[/]",
+            highlight=False,
+        )
+
     def _flush_llm_tokens(self) -> None:
         if self._token_buffer:
             self.console.print()  # newline after token stream
@@ -245,10 +276,17 @@ class StreamRenderer:
             for f in findings:
                 self._render_finding(f)
 
-        # Footer stats
+        # Footer stats — tool calls, findings, wall time, model, AND token cost
         used = report.get("tool_calls_used", 0)
         budget = report.get("tool_calls_budget", 0)
         duration = report.get("duration_seconds", 0)
+        tok_in = int(report.get("total_input_tokens", 0) or 0)
+        tok_out = int(report.get("total_output_tokens", 0) or 0)
+        cost = float(report.get("est_cost_usd", 0.0) or 0.0)
+        calls = int(report.get("llm_call_count", 0) or 0)
+
+        from .cost import format_count, format_cost
+
         self.console.print()
         self.console.print(
             f"  [dim]session:[/] {used}/{budget} tool calls · "
@@ -256,6 +294,15 @@ class StreamRenderer:
             f"{duration:.1f}s · "
             f"{report.get('model_used', '')}"
         )
+        if tok_in > 0 or tok_out > 0:
+            avg_tps = (tok_out / duration) if duration > 0 else 0.0
+            self.console.print(
+                f"  [dim]tokens:[/]  {format_count(tok_in)} in · "
+                f"{format_count(tok_out)} out · "
+                f"{calls} LLM call(s) · "
+                f"avg {avg_tps:.0f} tok/s · "
+                f"[bold]{format_cost(cost)}[/]"
+            )
         self.console.print()
 
     def _render_finding(self, f: dict) -> None:
@@ -312,6 +359,15 @@ def format_as_markdown(report) -> str:
     lines.append(f"- Tool calls: {report.tool_calls_used}/{report.tool_calls_budget}")
     lines.append(f"- Duration: {report.duration_seconds:.1f}s")
     lines.append(f"- Findings: {len(report.findings)}")
+    if report.total_input_tokens > 0 or report.total_output_tokens > 0:
+        from .cost import format_count, format_cost
+
+        lines.append(
+            f"- Tokens: {format_count(report.total_input_tokens)} in / "
+            f"{format_count(report.total_output_tokens)} out "
+            f"({report.llm_call_count} LLM call(s))"
+        )
+        lines.append(f"- Estimated cost: {format_cost(report.est_cost_usd)}")
     lines.append("")
 
     if report.systemic_observations:

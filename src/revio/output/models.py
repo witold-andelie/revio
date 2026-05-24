@@ -100,6 +100,12 @@ class ReviewReport(BaseModel):
     duration_seconds: float = 0.0
     model_used: str = ""
 
+    # --- LLM accounting (filled by runner.py from usage_metadata) ---
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    llm_call_count: int = 0
+    est_cost_usd: float = 0.0
+
     # --- Cross-finding observations (the "reflect" node's output) ---
     systemic_observations: list[str] = Field(
         default_factory=list,

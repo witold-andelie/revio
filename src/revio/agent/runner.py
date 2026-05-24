@@ -39,6 +39,66 @@ def _noop_stream(event: str, payload: dict) -> None:
     pass
 
 
+# --- Token accountant --------------------------------------------------------
+
+
+class _TokenAccountant:
+    """Accumulates per-call and session-wide token usage from LLM events.
+
+    Pulls `usage_metadata` (standardized across LangChain providers as
+    {input_tokens, output_tokens, total_tokens}) off the AIMessage emitted
+    by on_chat_model_end. Computes throughput against the wall-clock time
+    between on_chat_model_start and on_chat_model_end.
+
+    Unknown providers / missing usage → silently records zero, so the UX
+    never breaks.
+    """
+
+    def __init__(self, model: str):
+        self.model = model
+        self.input_tokens = 0
+        self.output_tokens = 0
+        self.call_count = 0
+        self._last_call_start: float | None = None
+
+    def on_llm_start(self) -> None:
+        self._last_call_start = time.time()
+
+    def on_llm_end(self, usage: dict) -> dict:
+        """Update totals; return per-call delta payload for the stream."""
+        now = time.time()
+        elapsed = (now - self._last_call_start) if self._last_call_start else 0.0
+        self._last_call_start = None
+
+        delta_in = int(usage.get("input_tokens", 0) or 0)
+        delta_out = int(usage.get("output_tokens", 0) or 0)
+        self.input_tokens += delta_in
+        self.output_tokens += delta_out
+        self.call_count += 1
+
+        throughput = (delta_out / elapsed) if (elapsed > 0.01 and delta_out > 0) else 0.0
+        from ..output.cost import estimate_cost_usd
+
+        return {
+            "delta_input": delta_in,
+            "delta_output": delta_out,
+            "total_input": self.input_tokens,
+            "total_output": self.output_tokens,
+            "throughput_tps": throughput,
+            "duration_seconds": elapsed,
+            "call_count": self.call_count,
+            "est_cost_usd": estimate_cost_usd(
+                self.model, self.input_tokens, self.output_tokens
+            ),
+        }
+
+    @property
+    def est_cost_usd(self) -> float:
+        from ..output.cost import estimate_cost_usd
+
+        return estimate_cost_usd(self.model, self.input_tokens, self.output_tokens)
+
+
 # --- Main runner --------------------------------------------------------------
 
 
@@ -199,16 +259,19 @@ async def run_agent(
                 "recursion_limit": 50,
             }
 
+            # Token accountant — collects per-call usage from on_chat_model_end
+            accountant = _TokenAccountant(model=config.llm.model)
+
             # Stream every event from the graph
             async for ev in graph.astream_events(initial, run_config, version="v2"):
-                _dispatch_event(ev, on_event)
+                _dispatch_event(ev, on_event, accountant=accountant)
 
             # Capture final state
             snapshot = await graph.aget_state(run_config)
             final_state = snapshot.values
 
     # Build the final report
-    report = _build_report(final_state, config)
+    report = _build_report(final_state, config, accountant=accountant)
 
     # Stash patches in the CLI's module-level cache so `revio dedup --fix`
     # can pick them up.
@@ -256,7 +319,11 @@ async def run_agent(
     return report
 
 
-def _dispatch_event(ev: dict, on_event: StreamCallback) -> None:
+def _dispatch_event(
+    ev: dict,
+    on_event: StreamCallback,
+    accountant: "_TokenAccountant | None" = None,
+) -> None:
     """Translate raw LangGraph events to our public stream event types."""
     ev_type = ev["event"]
     name = ev.get("name", "")
@@ -318,6 +385,8 @@ def _dispatch_event(ev: dict, on_event: StreamCallback) -> None:
 
     # LLM events (per-chunk streaming)
     if ev_type == "on_chat_model_start":
+        if accountant is not None:
+            accountant.on_llm_start()
         on_event("llm_start", {})
         return
     if ev_type == "on_chat_model_stream":
@@ -327,7 +396,29 @@ def _dispatch_event(ev: dict, on_event: StreamCallback) -> None:
             on_event("llm_token", {"chunk": token})
         return
     if ev_type == "on_chat_model_end":
-        on_event("llm_end", {})
+        # Pull usage_metadata off the final AIMessage. LangChain standardizes
+        # this across providers; missing fields silently become zero.
+        usage: dict = {}
+        out_msg = data.get("output")
+        if out_msg is not None:
+            um = getattr(out_msg, "usage_metadata", None)
+            if um:
+                usage = dict(um)
+            else:
+                # Some providers stash it under response_metadata.token_usage
+                rmeta = getattr(out_msg, "response_metadata", None) or {}
+                tu = rmeta.get("token_usage") or rmeta.get("usage") or {}
+                if tu:
+                    usage = {
+                        "input_tokens": tu.get("prompt_tokens") or tu.get("input_tokens", 0),
+                        "output_tokens": tu.get("completion_tokens") or tu.get("output_tokens", 0),
+                    }
+        payload = {}
+        if accountant is not None:
+            payload = accountant.on_llm_end(usage)
+        on_event("llm_end", payload)
+        if payload:
+            on_event("llm_usage", payload)
         return
 
 
@@ -353,7 +444,12 @@ def _preview(out, limit: int = 240) -> str:
     return s if len(s) <= limit else s[:limit] + "…"
 
 
-def _build_report(state: dict, config: Config) -> ReviewReport:
+def _build_report(
+    state: dict,
+    config: Config,
+    *,
+    accountant: "_TokenAccountant | None" = None,
+) -> ReviewReport:
     """Materialize a ReviewReport from final graph state."""
     findings = state.get("findings", []) or []
     started = state.get("started_at", 0.0)
@@ -369,6 +465,10 @@ def _build_report(state: dict, config: Config) -> ReviewReport:
         duration_seconds=duration,
         model_used=config.llm.model,
         systemic_observations=state.get("systemic_observations", []) or [],
+        total_input_tokens=accountant.input_tokens if accountant else 0,
+        total_output_tokens=accountant.output_tokens if accountant else 0,
+        llm_call_count=accountant.call_count if accountant else 0,
+        est_cost_usd=accountant.est_cost_usd if accountant else 0.0,
     )
 
 
