@@ -493,35 +493,142 @@ def _handle_nl_input(line: str, cfg: Config, state: dict) -> None:
 
 
 def _classify_intent(user_input: str, cfg: Config) -> dict | None:
-    """Single LLM call to classify multilingual NL request into structured intent."""
+    """Classify a multilingual NL request into a structured intent.
+
+    Strategy (in order):
+      1. Ask the LLM for strict JSON.
+      2. If response is parseable JSON, use it.
+      3. If not, fall back to a keyword classifier (no LLM needed).
+         Better to give the user a *reasonable* guess than a flat error.
+    """
     from langchain_core.messages import HumanMessage, SystemMessage
 
     from ..agent.llm import APIKeyMissingError, make_llm
 
+    # --- Try the LLM path first ---
+    llm_text = ""
     try:
         llm = make_llm(cfg, max_tokens=400)
+        resp = llm.invoke([SystemMessage(content=_INTENT_SYSTEM), HumanMessage(content=user_input)])
+        llm_text = resp.content if isinstance(resp.content, str) else "".join(
+            b.get("text", "") if isinstance(b, dict) else str(b) for b in resp.content
+        )
     except APIKeyMissingError:
         _console.print("  [red]✗[/] API key not configured. Run /key or /config.")
         return None
     except Exception as e:
-        _console.print(f"  [red]✗[/] intent classifier init failed: {e}")
-        return None
+        _console.print(f"  [yellow]·[/] LLM classifier unreachable ({type(e).__name__}); using keyword fallback")
+        return _keyword_classify(user_input)
 
-    try:
-        resp = llm.invoke([SystemMessage(content=_INTENT_SYSTEM), HumanMessage(content=user_input)])
-    except Exception as e:
-        _console.print(f"  [red]✗[/] intent classifier failed: {e}")
-        return None
+    # --- Parse JSON (lenient: strip markdown fences, find longest brace block) ---
+    parsed = _try_parse_json(llm_text)
+    if parsed and isinstance(parsed, dict) and parsed.get("intent") in {"review", "audit", "dedup", "chat"}:
+        return parsed
 
-    text = resp.content if isinstance(resp.content, str) else "".join(
-        b.get("text", "") if isinstance(b, dict) else str(b)
-        for b in resp.content
+    # LLM returned prose / wrong shape — show it once for debugging, then fall back
+    if os.environ.get("REVIO_DEBUG"):
+        _console.print(f"  [dim]LLM intent response (not JSON):[/] [dim]{llm_text[:200]}[/]")
+    _console.print("  [dim]·[/] LLM didn't return clean JSON; using keyword fallback")
+    return _keyword_classify(user_input)
+
+
+def _try_parse_json(text: str) -> dict | None:
+    """Lenient JSON extraction from a possibly-prosy LLM response."""
+    if not text:
+        return None
+    # Strip ```json ... ``` or ``` ... ``` fences
+    fence = re.search(r"```(?:json)?\s*\n?(.+?)```", text, re.DOTALL)
+    if fence:
+        text = fence.group(1)
+    # Find the LONGEST top-level brace block
+    candidates = re.findall(r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}", text, re.DOTALL)
+    candidates.sort(key=len, reverse=True)
+    for c in candidates:
+        try:
+            return json.loads(c)
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
+# --- Keyword-based fallback classifier (no LLM, multilingual) ---------------
+
+# Patterns are CASE-INSENSITIVE; one hit = winner. Order matters (specific
+# intents first, generic last). Keep this short and battle-tested rather
+# than try to cover every phrasing — the LLM path is the primary classifier.
+_KEYWORD_RULES = [
+    # dedup — finding duplication / dead code / AI-generated redundancy
+    ("dedup", [
+        "dedup", "redundan", "duplicate", "duplication", "dead code",
+        "重复", "冗余", "去重", "死代码",
+    ]),
+    # audit — full-repo / security / vulnerabilities (NO specific commit ref)
+    ("audit", [
+        "audit", "scan", "vulnerab", "security", "exploit", "cve",
+        "审计", "扫描", "漏洞", "安全", "全仓",
+    ]),
+    # review — diff / commit / PR / specific change
+    ("review", [
+        "review", "diff", "commit", "pull request", "this change",
+        "review this file", "check this file", "look at this file",
+        "审查", "检查这个", "看看这个", "看一下", "读取这个",
+    ]),
+]
+
+# Path detection — Windows abs, UNC, Unix abs, relative, quoted.
+_PATH_RE = re.compile(
+    r"""(?xi)
+    (?:
+      "([^"]+\.[a-z0-9]{1,8})"                              # quoted file
+    | '([^']+\.[a-z0-9]{1,8})'                              # quoted file (single)
+    | ([A-Z]:\\[^\s"',]+)                                   # Windows absolute
+    | (\\\\[^\s"',]+)                                       # UNC
+    | (/(?:[^/\s"',]+/)*[^/\s"',]+\.[a-z0-9]{1,8})          # Unix absolute file
+    | (\.{1,2}/[^\s"',]+)                                   # relative ./foo or ../foo
     )
+    """
+)
 
-    m = re.search(r"\{.*\}", text, re.DOTALL)
-    if not m:
-        return None
-    try:
-        return json.loads(m.group(0))
-    except json.JSONDecodeError:
-        return None
+_GIT_REF_RE = re.compile(r"\b(HEAD(?:~\d+|\^+)?|[a-f0-9]{7,40})\b")
+
+
+def _keyword_classify(user_input: str) -> dict:
+    """Best-effort classification when the LLM path fails.
+
+    Always returns a usable dict — never None. Worst case: intent='chat'
+    so the user can re-phrase. Path extraction is regex-based and works
+    on Windows / UNC / Unix / relative paths and quoted strings.
+    """
+    lower = user_input.lower()
+
+    intent = "chat"
+    for kind, keywords in _KEYWORD_RULES:
+        if any(k in lower for k in keywords):
+            intent = kind
+            break
+
+    # Extract first path-shaped token
+    target_path = None
+    for groups in _PATH_RE.findall(user_input):
+        for g in groups:
+            if g:
+                target_path = g
+                break
+        if target_path:
+            break
+
+    # If a path was found but intent is still 'chat', bump to 'review'
+    # (the most common "look at this file" pattern)
+    if target_path and intent == "chat":
+        intent = "review"
+
+    target_ref_m = _GIT_REF_RE.search(user_input)
+    target_ref = target_ref_m.group(1) if target_ref_m else None
+
+    return {
+        "intent": intent,
+        "target_path": target_path,
+        "target_ref": target_ref,
+        "focus_area": None,
+        "rationale": "keyword fallback (LLM classifier unavailable or invalid)",
+    }
