@@ -17,7 +17,7 @@ grounding validator, and (in dedup mode) applies code-modification patches
 to real files with git-stash safety nets.
 
 **Bottom line**: not "another LLM that reads code" — a layered system where
-the LLM is the orchestrator above 12 deterministic analyzers, 18 Tree-sitter
+the LLM is the orchestrator above 13 deterministic analyzers, 18 Tree-sitter
 grammars, RAG, and ~30 specialized tools.
 
 ---
@@ -173,7 +173,7 @@ Most "LLM code review" tools have **no static layer at all** — they rely on
 the LLM to spot every issue from raw source. That's where hallucination
 and false positives come from.
 
-revio wires 12 best-in-class analyzers, **one per major language**:
+revio wires 13 best-in-class analyzers, **one per major language**:
 
 ```mermaid
 flowchart LR
@@ -191,6 +191,7 @@ flowchart LR
     dispatcher -->|.rb| rubocop["rubocop"]
     dispatcher -->|.php| phpstan["phpstan"]
     dispatcher -->|.kt/.kts| detekt["detekt"]
+    dispatcher -->|.v/.sv| verilator["verilator<br/>(--lint-only)"]
     dispatcher -->|.st/.iecst| plc["30+ PLCopen rules<br/>3 levels: pattern/structural/semantic"]
     
     oxlint --> autoEmit["Auto-emit to state<br/>(no LLM re-emit needed)"]
@@ -205,6 +206,7 @@ flowchart LR
     rubocop --> autoEmit
     phpstan --> autoEmit
     detekt --> autoEmit
+    verilator --> autoEmit
     plc --> autoEmit
     
     autoEmit --> agentReport["Final report"]
@@ -226,6 +228,7 @@ flowchart LR
 | **rubocop** | Ruby community standard; style + perf + security cops in one tool; supports auto-fix |
 | **phpstan** | level-based incremental adoption (0-9); finds type errors, dead code, deprecated API without running the code |
 | **detekt** | the Kotlin lint standard (especially for Android & server-side Kotlin); style + complexity + potential bugs + naming conventions |
+| **verilator** | the open-source SystemVerilog standard; `--lint-only` mode catches WIDTH mismatches, LATCH inference, BLKSEQ (blocking-in-sequential), MULTIDRIVEN nets, ASYNC paths — all synthesis-correctness issues that survive into silicon |
 
 **Why "auto-emit"** (a real innovation): static analyzers are deterministic.
 If we wait for the LLM to "see" their output and then call `report_finding`,
@@ -234,7 +237,7 @@ wrong). Instead: the tool pushes its findings *directly* into agent state
 via `ctx.pending_findings`. LLM sees them, can add semantic context, but
 they're already guaranteed to appear in the report.
 
-> Layer 2 source: `src/revio/layers/static/{oxlint,bandit,clippy,spotbugs,golangci_lint,cppcheck,shellcheck,luacheck,sqlfluff,rubocop,phpstan,detekt,plc_rules,plc_cfg,plc_hw_config}.py`
+> Layer 2 source: `src/revio/layers/static/{oxlint,bandit,clippy,spotbugs,golangci_lint,cppcheck,shellcheck,luacheck,sqlfluff,rubocop,phpstan,detekt,verilator,plc_rules,plc_cfg,plc_hw_config}.py`
 > Auto-emit mechanism: `src/revio/agent/tool_context.py` (`pending_findings` field)
 > + `src/revio/agent/graph.py` (drain after each tool call).
 
@@ -369,6 +372,70 @@ in `cli/wizard.py` (preset) + nothing else.
 - ✓ DeepSeek (used in our automated end-to-end tests)
 - ✓ Mimo (Xiaomi token plan — original provider)
 - ✓ Anthropic native — interface compatibility verified
+
+### 8b. The local-LLM story (a strategic feature, not a footnote)
+
+Among our target customers — universities, defense/aerospace, hospital
+IT, **banks**, **financial code review**, **insurance**, **government IT**
+— the ability to run revio fully on-prem is **not a nice-to-have, it's
+a contract precondition**. FERPA, HIPAA, GDPR, SOX, and many
+institutional security policies forbid sending source code to a US
+cloud API.
+
+revio doesn't restrict local deployments to a curated short list. It
+talks to **any OpenAI-compatible `/v1/chat/completions` endpoint**,
+which is the dominant standard for self-hosted runtimes (Ollama, vLLM,
+SGLang, llama.cpp, LM Studio, LocalAI, TGI, OpenLLM, Triton, ...).
+
+This means three customer tiers, **same product**:
+
+| Tier | Typical deployment | Example models |
+|---|---|---|
+| Laptop | Ollama on macOS / Linux / Windows | qwen2.5-7b, llama3.1-8b, deepseek-r1-8b |
+| Mid-size org | vLLM on a workstation or 1-2 GPU server | qwen2.5-32b, llama3.1-70b |
+| **Enterprise (banks / defense / large telcos)** | **Multi-node GPU cluster with full-size frontier weights** | **DeepSeek-V3 671 B · Llama 3.1 405 B · Qwen 3 235 B · their own fine-tunes** |
+
+The enterprise tier deserves emphasis: **a bank with its own GPU
+cluster running a 671 B model gets the SAME revio experience as a
+laptop user running 8 B** — same agent loop, same 13 static analyzers,
+same RAG, same `--fix`, same fix history. Only the LLM endpoint URL
+changes.
+
+| Constraint | Why local-only is the answer |
+|---|---|
+| Student code review (FERPA) | Sending student work to a 3rd-party LLM is a frequent FERPA finding |
+| Patient-data tooling (HIPAA) | Any code touching PHI must stay in-network |
+| Bank / insurance code review | Internal IP + regulator audit trails — code can't leave the firewall, full-size models on private clusters required |
+| National AI sovereignty | Multiple jurisdictions now prohibit US-origin LLM for state work |
+| Industrial control (PLC + Verilog) | Air-gapped by policy; `plc` + `verilog` profiles are valuable here |
+| Cost at scale | A CS department doing 5 000 audits / semester pays $0 |
+| Vendor independence | No provider rug-pull or pricing-tier change can break a CI |
+
+**What's identical** between any local deployment and cloud:
+- Agent loop, tool calls, streaming, plan→react→reflect graph
+- All 13 Layer-2 static analyzers (run as local subprocesses regardless)
+- RAG embeddings (`all-MiniLM-L6-v2` ships in-process, always local)
+- Skills, MCP client + server, `dedup --fix`, snapshot-based undo
+
+**What scales with hardware**:
+- Per-call latency (laptop → seconds · multi-GPU → ~cloud)
+- Finding quality on tricky semantic cases (671 B local ≈ frontier cloud)
+- **Cost: $0 per audit** once the hardware is paid for
+
+**Setup is one block of config**:
+
+```toml
+[llm]
+provider = "openai_compat"
+api_url  = "http://<host>:<port>/v1"      # whatever your local server exposes
+api_key  = "unused"                         # or internal token
+model    = "<whatever the endpoint serves>" # /v1/models auto-discovery via `revio /model`
+```
+
+> Slide bullet: **"revio talks to anything that speaks OpenAI's
+> `/v1/chat/completions` — from a 7 B Qwen on your laptop to a 671 B
+> DeepSeek on a bank's private GPU cluster. Same product, same
+> features, three orders of magnitude of capability range."**
 
 ---
 
@@ -947,7 +1014,8 @@ competitor at the time of writing.
 
 ## 15. One-line value props (slide bullets)
 
-- **"Static analysis depth meets LLM reasoning width"** — 12 deterministic analyzers + 17 language profiles + Claude/DeepSeek/Ollama
+- **"Static analysis depth meets LLM reasoning width"** — 13 deterministic analyzers + 17 language profiles + Claude/DeepSeek/Ollama
+- **"Runs identically against your laptop's Ollama and against Claude"** — local-LLM is a first-class path, not an afterthought; FERPA/HIPAA/GDPR/air-gap safe
 - **"Never burns the LLM context"** — Tree-sitter as fact provider, agent fetches functions on demand (95% token savings)
 - **"Hallucination-resistant by construction"** — Hypothesis-evidence findings + grounding validator that rejects fabricated paths
 - **"Your rules, agent's eyes"** — RAG over `.md/.pdf/.docx` company guidelines; agent cites § X.Y.Z directly in findings

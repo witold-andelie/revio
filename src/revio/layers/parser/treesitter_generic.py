@@ -228,6 +228,11 @@ EXT_LANG: dict[str, str] = {
     ".sh":      "shell",
     ".bash":    "shell",
     ".zsh":     "shell",
+    # Hardware description (Verilog / SystemVerilog)
+    ".v":       "verilog",
+    ".vh":      "verilog",
+    ".sv":      "verilog",
+    ".svh":     "verilog",
 }
 
 

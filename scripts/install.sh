@@ -129,6 +129,7 @@ install_analyzer "cppcheck"      "cppcheck"      "cppcheck"      "cppcheck"
 install_analyzer "golangci-lint" "golangci-lint" "golangci-lint" "golangci-lint"
 install_analyzer "shellcheck"    "shellcheck"    "shellcheck"    "shellcheck"
 install_analyzer "luacheck"      "luacheck"      "luacheck"      "lua-check"
+install_analyzer "verilator"     "verilator"     "verilator"     "verilator"
 # sqlfluff is a pip package — installed above with the [languages] extras? No.
 # It's not in pyproject extras, so install it now into revio's venv:
 if ! "$VPY" -m sqlfluff --version >/dev/null 2>&1; then

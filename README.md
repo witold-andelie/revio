@@ -22,8 +22,9 @@ $ revio review --commit HEAD
 | | What |
 |---|---|
 | **3 modes** | `review` (diff) · `audit` (full repo) · `dedup` (find AI redundancy) |
-| **17 languages** | JS/TS · Python · Rust · Java · Go · C/C++ · Shell · Lua · SQL · Ruby · PHP · Kotlin · 4 generic · PLC · 9 LLM-only |
-| **12 static analyzers** | oxlint · bandit · clippy · spotbugs · golangci-lint · cppcheck · **shellcheck** · **luacheck** · **sqlfluff** · **rubocop** · **phpstan** · **detekt** |
+| **17 languages** | JS/TS · Python · Rust · Java · Go · C/C++ · Shell · Lua · SQL · Ruby · PHP · Kotlin · **Verilog/SystemVerilog** · 4 generic · PLC · 8 LLM-only |
+| **13 static analyzers** | oxlint · bandit · clippy · spotbugs · golangci-lint · cppcheck · shellcheck · luacheck · sqlfluff · rubocop · phpstan · detekt · **verilator** |
+| **Local / self-hosted LLM** | Point at any Ollama / vLLM / private endpoint — code never leaves the machine. **Free + air-gap + FERPA/GDPR-safe.** |
 | **PLC support** | 7 vendor parsers · 30+ PLCopen rules · HW audit · LD/FBD/SFC → ST |
 | **RAG** | Index your company's coding guidelines, cited inline in findings |
 | **Skills** | Anthropic Agent Skills spec, dual-layer (project + user) |
@@ -91,6 +92,7 @@ pip install "git+https://github.com/witold-andelie/revio.git#egg=revio[js,plc,py
 | Ruby | rubocop | `gem install rubocop` | `gem install rubocop` (needs Ruby) |
 | PHP | phpstan | `composer global require phpstan/phpstan` | (same; needs PHP + Composer) |
 | Kotlin | detekt | `brew install detekt` (needs JDK) | download `detekt-cli` from GitHub |
+| Verilog / SystemVerilog | verilator | `brew install verilator` / `apt install verilator` | `scoop install verilator` |
 
 **Missing analyzers don't break anything** — revio detects what's installed and falls back to AST + LLM reasoning for the rest.
 
@@ -177,6 +179,86 @@ model = "deepseek-v4-pro"
 
 For per-project overrides, drop a `.revio.toml` in the repo root —
 shadows the user-global config and is meant to be committed.
+
+---
+
+## Local / self-hosted LLM (zero data leaves the box)
+
+revio's `openai_compat` provider works with **any OpenAI-compatible
+endpoint** — that's the dominant API standard for self-hosted runtimes.
+revio doesn't care whether the model is a 4 GB quantized Qwen on a
+laptop, a 70 B Llama on a workstation, **or a full-power 671 B
+DeepSeek-V3 / 405 B Llama-3.1 / 489 B Qwen-Max running on a bank's
+own GPU cluster**. The same provider config drives all of them.
+
+Compatible runtimes (non-exhaustive): **Ollama · vLLM · SGLang ·
+llama.cpp server · LM Studio · LocalAI · TGI (HuggingFace Text
+Generation Inference) · OpenLLM · Triton Inference Server**. If it
+exposes `/v1/chat/completions`, revio works against it.
+
+### Why this matters
+
+| Constraint | Why local LLM is the only answer |
+|---|---|
+| Student / patient / financial code review | FERPA / HIPAA / GDPR / SOX often forbid sending code to a US API |
+| **Banks / insurance / law firms** | Internal IP + regulator audit trails — code must stay inside the firewall, often with full-size models running on private GPU clusters |
+| **Government / defense / aerospace** | Air-gapped by policy; both `plc` and `verilog` profiles are valuable here |
+| **National AI sovereignty** | Russia / China / EU mandates that prohibit US-origin LLM access for state-related work |
+| Cost at scale | A CS department doing 5 000 audits / semester pays $0 instead of $50-500 |
+| Vendor independence | No provider rug-pull / pricing-tier change breaks your CI |
+
+### One-time setup (any local server)
+
+```toml
+# ~/.config/revio/config.toml
+[llm]
+provider = "openai_compat"
+api_url = "http://<host>:<port>/v1"   # whatever your local server exposes
+api_key = "unused"                     # or your internal token, if any
+model = "<whatever-model-id-the-endpoint-serves>"
+```
+
+Then `revio audit .` — fully offline from this point on. The setup is
+**model-agnostic**: replace the `api_url` + `model` line and you're
+talking to a different deployment. Examples:
+
+| Deployment | `api_url` | `model` |
+|---|---|---|
+| Ollama on your laptop | `http://localhost:11434/v1` | e.g. `qwen2.5:7b`, `llama3.1:8b` |
+| vLLM behind nginx in your DC | `https://llm.internal/v1` | e.g. `deepseek-v3-671b`, `llama-3.1-405b` |
+| Bank's on-prem cluster (full-size frontier model) | `https://gpu-cluster.bank.local/v1` | whatever the cluster team registers |
+| Air-gapped lab box | `http://192.168.x.x:8000/v1` | whatever's loaded |
+
+`/model` REPL command **auto-discovers** whatever models the endpoint
+serves by hitting `GET /v1/models`. No separate config for each model.
+
+`/cost` shows token counts but **silently omits the `$` figure** for
+local models (no cost to misrepresent).
+
+### Hybrid setup
+
+Embeddings used by RAG (`all-MiniLM-L6-v2`, ~80 MB) always run locally
+in revio's own process — your indexed guidelines never go through any
+API. You can combine local embeddings with a cloud LLM, or go fully
+local. Mix and match per `.revio.toml`.
+
+### What works · what's identical · what scales with hardware
+
+| Feature | Local LLM (any size) | Cloud LLM |
+|---|---|---|
+| Agent loop · tools · streaming · MCP · `--fix` | ✅ identical | ✅ |
+| All 13 Layer-2 static analyzers | ✅ identical (run as subprocesses) | ✅ |
+| RAG (embeddings) | ✅ always local | ✅ embeddings local; LLM cloud |
+| Per-call latency | hardware-bound (laptop: slow · 8×H100: fast) | network-bound |
+| Finding quality on tricky semantic cases | scales with model size — a frontier 671 B on local hardware ≈ frontier cloud | typically high |
+| Cost per audit | **$0** (you already paid for the GPUs) | $0.01-$0.30 typical |
+
+**The point**: customers with budget for a serious local deployment
+(banks, defense primes, large universities, telcos) get the **same**
+quality as cloud — with full data sovereignty. Customers without that
+budget can run a 7-8 B model on a developer laptop and still get
+useful static-analyzer coverage + LLM reasoning. **Same product, both
+extremes of the spectrum.**
 
 ---
 
@@ -303,6 +385,7 @@ Non-slash input is classified by an intent LLM into `review` / `audit` /
 | `ruby` | Tree-sitter | **rubocop** |
 | `php` | Tree-sitter | **phpstan** |
 | `kotlin` | Tree-sitter | **detekt** (needs JDK) |
+| `verilog` | Tree-sitter | **verilator** (--lint-only) |
 | `generic` | Tree-sitter (Scala / C# / Swift / Julia) | — |
 | LLM-only | MATLAB · R · Verilog · SAS · COBOL · Solidity · Zig · ObjC · Dart | — |
 
@@ -373,6 +456,7 @@ on exit `2`.
 | Cross-session memory | Stateless | SQLite history — "🆕 New since last run" |
 | Auto-fix | Text suggestion only | `--fix` actually edits files |
 | Undo a fix | "Hope you committed before running" | `revio fix undo` — snapshot-based, multi-step, no git required |
+| Self-hosted / offline | Cloud-only, your code goes to a US API | Any OpenAI-compatible endpoint — **Ollama, vLLM, on-prem GPU**; FERPA/HIPAA/GDPR-safe |
 
 ---
 

@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from ..layers.static.shellcheck import ShellcheckRunner
     from ..layers.static.spotbugs import SpotBugsRunner
     from ..layers.static.sqlfluff import SqlfluffRunner
+    from ..layers.static.verilator import VerilatorRunner
     from ..skills import SkillActivation, SkillsRegistry
 
 
@@ -82,6 +83,8 @@ class ToolContext:
     _phpstan_unavailable: bool = field(default=False, init=False, repr=False)
     _detekt_runner: "DetektRunner | None" = field(default=None, init=False, repr=False)
     _detekt_unavailable: bool = field(default=False, init=False, repr=False)
+    _verilator_runner: "VerilatorRunner | None" = field(default=None, init=False, repr=False)
+    _verilator_unavailable: bool = field(default=False, init=False, repr=False)
     _rag_retriever: "GuidelineRetriever | None" = field(default=None, init=False, repr=False)
     _rag_unavailable: bool = field(default=False, init=False, repr=False)
     _skills_registry: "SkillsRegistry | None" = field(default=None, init=False, repr=False)
@@ -303,6 +306,21 @@ class ToolContext:
                 self._detekt_unavailable = True
                 return None
         return self._detekt_runner
+
+    @property
+    def verilator(self) -> "VerilatorRunner | None":
+        if self._verilator_unavailable:
+            return None
+        if self._verilator_runner is None:
+            try:
+                from ..layers.static.verilator import VerilatorRunner
+
+                self._verilator_runner = VerilatorRunner()
+            except Exception as e:
+                logger.warning("verilator unavailable: %s", e)
+                self._verilator_unavailable = True
+                return None
+        return self._verilator_runner
 
     # ---- Skills ----
 

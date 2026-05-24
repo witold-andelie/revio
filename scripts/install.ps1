@@ -130,6 +130,7 @@ Install-Analyzer 'cppcheck'      'cppcheck'      'Cppcheck.Cppcheck'            
 Install-Analyzer 'golangci-lint' 'golangci-lint' 'golangci-lint.golangci-lint'   'golangci-lint' ''
 Install-Analyzer 'shellcheck'    'shellcheck'    'koalaman.shellcheck'           'shellcheck' ''
 Install-Analyzer 'luacheck'      'luacheck'      ''                              'luacheck' ''
+Install-Analyzer 'verilator'     'verilator'     ''                              'verilator'  ''
 # sqlfluff is a pip package — install into revio's venv directly
 $sqlfluffCheck = & $vpy -m sqlfluff --version 2>$null
 if ($LASTEXITCODE -ne 0) {

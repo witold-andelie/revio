@@ -164,3 +164,20 @@ def make_detekt_tool(ctx: ToolContext):
         runner_attr="detekt",
         install_hint="Install: brew install detekt (macOS) or download detekt-cli",
     )
+
+
+def make_verilator_tool(ctx: ToolContext):
+    return _make_lint_tool(
+        ctx,
+        tool_name="run_verilator",
+        docstring=(
+            "Run verilator --lint-only on a Verilog/SystemVerilog file or "
+            "directory. Catches bit-width mismatches, latch inference, "
+            "blocking/non-blocking misuse, multi-driven nets, async logic, "
+            "and synthesis-hazardous patterns.\n\n"
+            "Args:\n  relative_path: path under repo root. Default '.'\n\n"
+            "Returns: one line per finding."
+        ),
+        runner_attr="verilator",
+        install_hint="Install: brew install verilator (macOS) / apt install verilator (Linux)",
+    )

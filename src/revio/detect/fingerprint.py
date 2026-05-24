@@ -107,7 +107,7 @@ _LANG_PROFILE: dict[str, str] = {
     "r": "r",
     "verilog": "verilog",
     "systemverilog": "verilog",
-    "vhdl": "verilog",
+    # vhdl uses a different grammar + tool ecosystem; falls through to LLM-only
     "sas": "sas",
     "cobol": "cobol",
     "solidity": "solidity",

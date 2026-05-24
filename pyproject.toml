@@ -83,6 +83,7 @@ languages = [
     "tree-sitter-scala>=0.23.0",
     "tree-sitter-kotlin>=1.0.0",
     "tree-sitter-swift>=0.7.0",
+    "tree-sitter-verilog>=1.0.0",
 ]
 all = ["revio[js,plc,python,languages]"]
 dev = [

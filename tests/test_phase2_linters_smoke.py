@@ -28,6 +28,7 @@ HAS_SQLFLUFF = (
     shutil.which("sqlfluff") is not None
     or (Path(sys.executable).parent / "sqlfluff").is_file()
 )
+HAS_VERILATOR = shutil.which("verilator") is not None
 
 
 def test_shellcheck_live(tmp: Path) -> None:
@@ -108,6 +109,41 @@ def test_sqlfluff_live(tmp: Path) -> None:
     print(f"  · rule codes seen: {sorted(rule_codes)[:5]}")
 
 
+def test_verilator_live(tmp: Path) -> None:
+    print("\n[3b] verilator — live subprocess")
+    if not HAS_VERILATOR:
+        print("  · verilator not installed; skipping live test")
+        return
+
+    bad = tmp / "bad.v"
+    bad.write_text("""module bad_design(input clk, input rst, output [15:0] data_out);
+    reg [7:0] reg_a;
+    reg [15:0] reg_b;
+    assign data_out = reg_a;                // WIDTHEXPAND: 8→16 implicit
+    always @(*) begin
+        if (rst) reg_a = 8'b0;              // LATCH: missing else
+    end
+    always @(posedge clk) begin
+        reg_b = reg_a;                       // BLKSEQ: blocking in sequential
+        reg_b <= reg_b + 1;
+    end
+endmodule
+""")
+
+    from revio.layers.static.verilator import VerilatorRunner
+
+    runner = VerilatorRunner()
+    findings = runner.scan_to_findings(bad, repo_root=tmp)
+    print(f"  · {len(findings)} findings on a 12-line verilog module")
+    assert len(findings) >= 3, f"expected ≥3 findings, got {len(findings)}"
+    codes = {f.evidence[0].source for f in findings}
+    print(f"  · rule codes: {sorted(codes)[:6]}")
+    assert any("verilator:" in c for c in codes), "expected verilator: prefix"
+    # Should have caught at least one of LATCH, BLKSEQ, or WIDTH*
+    assert any(("LATCH" in c) or ("BLKSEQ" in c) or ("WIDTH" in c) for c in codes), \
+        f"expected LATCH/BLKSEQ/WIDTH* but got {codes}"
+
+
 def test_absent_fallbacks_for_others() -> None:
     """Verify the 4 non-installed linters raise NotInstalled correctly."""
     print("\n[4] luacheck / rubocop / phpstan / detekt — NotInstalled paths")
@@ -171,6 +207,7 @@ def main():
         test_shellcheck_live(tmp)
         test_shellcheck_absent_fallback()
         test_sqlfluff_live(tmp)
+        test_verilator_live(tmp)
         test_absent_fallbacks_for_others()
         test_tool_context_lazy()
         print("\nAll phase-2 linter smoke checks PASSED.")
