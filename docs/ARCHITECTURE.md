@@ -1027,6 +1027,9 @@ competitor at the time of writing.
 - **"University-ready"** — covers EE (PLC/Verilog/MATLAB/embedded C) + CS (mainstream langs); cites course syllabi via RAG
 - **"Output language follows user input"** — ask in Chinese, the title/hypothesis/suggestion/summary come back in Chinese; ask in German, German; tool args + evidence quotes stay English for log-greppability
 - **"Post-install ergonomics matter"** — `/model` picker for switching LLM (with live `/v1/models` discovery); `revio analyzers install jcs` for adding more language analyzers; both work without re-running the bootstrap installer
+- **"UI / docs / install flow are English-only"** — keeps screenshots, support tickets, Stack Overflow answers, CI logs identical across locales. Only the agent's user-facing reasoning fields adapt to the user's language.
+- **"Letter-coded analyzer selection"** — installer + `revio analyzers install` both take a single string of mnemonic letters (`jcsq` = JS + C/C++ + Shell + SQL) instead of 13 Y/N prompts. One key per language, two-column menu, `*` = all, empty = none.
+- **"Owl visual rhythm"** — mascot animation on REPL startup AND between every NL-driven task. Small thing, but makes each request feel like a fresh interaction rather than a continuation. Skipped on non-TTY.
 
 ---
 

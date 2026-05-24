@@ -1283,6 +1283,131 @@ in the message stream). No regex detection, no language-tag plumbing.
 
 ---
 
+## 13e. Owl mascot timing (startup + between tasks)
+
+**Symptom**: animation flickers / doesn't appear / appears too often
+
+**File trace**:
+```
+cli/repl.py:_print_banner(cfg, state)             # REPL startup
+   from .mascot import play_startup_animation
+   play_startup_animation(_console)               # ~1.2s on startup
+
+cli/repl.py:_handle_nl_input(line, cfg, state)    # after every NL task
+   try:
+       run_agent_sync(...)                        # the actual task
+   finally:
+       from .mascot import play_startup_animation
+       _console.print()
+       play_startup_animation(_console)           # ~1.2s after task
+       _console.print()
+```
+
+**Why finally:**, not else: — the mascot plays whether the agent
+succeeded, raised, or got KeyboardInterrupted. Visual reset feels
+honest regardless of outcome.
+
+**Slash commands do NOT trigger the animation** — those are config /
+discovery actions (cheap, instantaneous), not "tasks". Hard-coded by
+which dispatcher routes them (_handle_slash vs _handle_nl_input).
+
+**Suppression**:
+- `REVIO_NO_MASCOT=1` env var → animation skipped entirely
+- `not sys.stdout.isatty()` → animation skipped (CI, piped output)
+- `console.is_terminal == False` → animation skipped
+
+**Animation script** (`cli/mascot.py:_SCRIPT`):
+```
+7 frames, 1.20s total:
+  idle (0.18s) → left-scan (0.22s) → idle (0.10s) →
+  right-scan (0.22s) → idle (0.10s) → both-lit (0.18s) → rest (0.20s)
+```
+
+Eye glyphs: `EYE_REST_RAW = ' ◉ '` (3-col), `EYE_SCAN_RAW = '(◉)'` (3-col).
+Slot width is fixed so the silhouette never jitters between rest and
+scan. If you ever change them, keep the column count equal or the
+body box-drawing will misalign.
+
+**Common failures**:
+- **Mascot appears twice on startup**: someone called
+  play_startup_animation outside _print_banner. There's exactly one
+  startup call site; if you see two, search for stray calls.
+- **No animation despite TTY**: REVIO_NO_MASCOT is set, or
+  `console.is_terminal` returns False (Rich's auto-detect failed —
+  forcing `Console(force_terminal=True)` is a workaround).
+
+---
+
+## 13f. UI language is English-only (design choice)
+
+**Symptom**: someone tries to localize the wizard / banner / slash
+commands and is wondering why we don't.
+
+**Decision**: ALL of the following are English-only forever:
+- Wizard prompts (`cli/wizard.py`)
+- REPL banner (`cli/repl.py:_print_banner`)
+- Slash command help text + `/help` output
+- Install scripts (`scripts/install.sh`, `install.ps1`)
+- `revio config show`, `revio analyzers`, `revio fix history`, etc.
+- Error messages from revio itself (not from the underlying tool)
+- All `docs/` (ARCHITECTURE, INTERNALS, BENCHMARKS, DEMO_SCRIPT)
+- README
+
+**Why**: screenshots, support tickets, Stack Overflow Q&A, and CI logs
+should look identical regardless of the user's locale. A French
+developer pasting an error message into a Czech colleague's IDE
+shouldn't get a translation mismatch.
+
+**What DOES localize**: the agent's user-facing reasoning fields
+(see §13d 'Output-language routing'). That's the only locale-sensitive
+surface — the LLM's response to the user's actual question.
+
+**If you find Chinese / German / etc. in user-displayed strings outside
+the agent's response**: that's a bug. Search and replace. The
+`_KEYWORD_RULES` in cli/repl.py:563 is the ONE exception — keyword
+patterns are non-user-facing matching logic, not display text.
+
+---
+
+## 13g. Letter-coded analyzer menu
+
+**Symptom**: someone wants to add a 14th analyzer / change the codes /
+the menu doesn't show their language.
+
+**File trace**:
+```
+Three places that MUST stay in sync (no tooling enforces this yet):
+
+  src/revio/cli/analyzers.py:REGISTRY     ← `revio analyzers ...`
+  scripts/install.ps1   :$AnalyzerMap     ← Windows installer Stage 6b
+  scripts/install.sh    :ANALYZERS array  ← macOS/Linux installer Stage 6b
+```
+
+All three list the same 12 analyzers with the same letters. The codes
+are mnemonics, mostly the language's first letter; collisions resolved
+by taking the next salient letter:
+
+```
+j = JS/TS      c = C/C++       g = Go        r = Rust
+a = jAva       s = Shell       l = Lua       q = sQl (S taken)
+v = Verilog    u = rUby        h = pHp       k = Kotlin
+```
+
+`parse_letters("jcs")` walks character-by-character, lowercases,
+strips spaces, deduplicates while preserving first-appearance order,
+and returns (specs, unknown_letters). `*` resolves to all. Empty
+resolves to nothing.
+
+**Common failures**:
+- **'unknown letter' on a code that should work**: probably a typo, or
+  someone removed the spec from REGISTRY but the docs / install scripts
+  still mention it. Check all three files.
+- **New analyzer doesn't appear in `revio analyzers`**: only added to
+  REGISTRY in analyzers.py. Make sure scripts/install.{ps1,sh} also
+  list it under the menu so installer flow is consistent.
+
+---
+
 ## 14. Quick diagnostic checklist
 
 | Symptom | First check |

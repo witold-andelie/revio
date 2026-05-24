@@ -446,7 +446,8 @@ revio              # drop into REPL
 
 ```
 > review the last 3 commits
-> 检查这个项目里有没有重复代码         ← any language; output stays English
+> 检查这个项目里有没有重复代码         ← reply comes back in Chinese
+> Vérifie src/auth.py pour des fuites  ← reply comes back in French
 > /model deepseek-v4-pro
 ```
 
@@ -465,6 +466,30 @@ revio              # drop into REPL
 
 Non-slash input is classified by an intent LLM into `review` / `audit` /
 `dedup` / `chat`. Multilingual by design.
+
+### Language: input vs output
+
+revio splits language responsibility along a deliberate boundary:
+
+| Layer | Language |
+|---|---|
+| **Wizard banner · UI labels · slash commands · install scripts · docs · examples** | **English always** (so screenshots / Stack Overflow / support tickets read the same in any locale) |
+| **Your natural-language requests** | **Any language** — Chinese, German, French, Spanish, Czech, Japanese, ... |
+| **Findings shown to you** (title, hypothesis, suggestion, counter-consideration, reflect summary, systemic observations, plan text) | **Same language as your request** — Chinese in → Chinese out |
+| **Tool args** (`read_file("src/auth.py")`, regex patterns) and **evidence quotes** (verbatim tool output) | **English always** — for log-greppability and tool compatibility |
+
+So you can ask `检查 src/auth.py 看有没有 SQL 注入` and get back finding
+cards titled `SQL 注入：query 用 f-string 拼接 user_id`, with the
+suggested fix in Chinese — but the agent's internal `read_file()` call
+still uses the literal path `"src/auth.py"`.
+
+### Visual rhythm — owl between tasks
+
+The owl mascot that animates on REPL startup also plays a short (~1 s)
+loop **after every NL-driven task finishes**. Visual separator so the
+next prompt feels like a fresh task instead of a continuation. Skipped
+on non-TTY (CI). Slash commands (`/help`, `/cost`, etc.) don't trigger
+it — they're configuration, not "tasks".
 
 ---
 
