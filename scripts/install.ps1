@@ -259,56 +259,86 @@ function Install-Analyzer {
     return $false
 }
 
-# Build the menu (label, command-check, install args, default selection)
-$AnalyzerMenu = @(
-    @{ Name='JS/TS (oxlint)';           Check='oxlint';        Npm='oxlint';  Default=$true  }
-    @{ Name='Python (bandit)';          Check='bandit';        VPip='bandit'; Default=$true  }   # bandit is pip-installed via [python] extra already
-    @{ Name='C/C++ (cppcheck)';         Check='cppcheck';      Winget='Cppcheck.Cppcheck';        Scoop='cppcheck';        Default=$true  }
-    @{ Name='Go (golangci-lint)';       Check='golangci-lint'; Winget='golangci-lint.golangci-lint'; Scoop='golangci-lint'; Default=$true  }
-    @{ Name='Shell (shellcheck)';       Check='shellcheck';    Winget='koalaman.shellcheck';      Scoop='shellcheck';      Default=$true  }
-    @{ Name='Lua (luacheck)';           Check='luacheck';      Scoop='luacheck';        Manual='install Scoop (https://scoop.sh) then `scoop install luacheck`'; Default=$false }
-    @{ Name='SQL (sqlfluff)';           Check='__SQLFLUFF__';  Default=$true  }   # special handling: pip into venv
-    @{ Name='Verilog (verilator)';      Check='verilator';     Scoop='verilator'; Manual='install Scoop then `scoop install verilator`, or use WSL'; Default=$false }
-    @{ Name='Rust (clippy)';            Check='cargo-clippy';  Manual='comes with rustup: `rustup component add clippy`'; Default=$false }
-    @{ Name='Java (spotbugs)';          Check='spotbugs';      Winget='SpotBugs.SpotBugs'; Manual='needs JDK; download from spotbugs.github.io'; Default=$false }
-    @{ Name='Ruby (rubocop)';           Check='rubocop';       Manual='install Ruby + `gem install rubocop`'; Default=$false }
-    @{ Name='PHP (phpstan)';            Check='phpstan';       Manual='install PHP + Composer + `composer global require phpstan/phpstan`'; Default=$false }
-    @{ Name='Kotlin (detekt)';          Check='detekt';        Scoop='detekt'; Manual='needs JDK; download detekt-cli from GitHub'; Default=$false }
-)
+# Each analyzer keyed by a single mnemonic letter.
+# Layout: code | full label | command-probe | winget | scoop | npm | manual hint
+$AnalyzerMap = [ordered]@{
+    'j' = @{ Label='JS / TypeScript    (oxlint)';     Check='oxlint';        Npm='oxlint' }
+    'c' = @{ Label='C / C++            (cppcheck)';   Check='cppcheck';      Winget='Cppcheck.Cppcheck';           Scoop='cppcheck' }
+    'g' = @{ Label='Go                 (golangci-lint)'; Check='golangci-lint'; Winget='golangci-lint.golangci-lint'; Scoop='golangci-lint' }
+    'r' = @{ Label='Rust               (clippy)';     Check='cargo-clippy';  Manual='comes with rustup: rustup component add clippy' }
+    'a' = @{ Label='Java               (spotbugs)';   Check='spotbugs';      Winget='SpotBugs.SpotBugs'; Manual='needs JDK; download from spotbugs.github.io' }
+    's' = @{ Label='Shell              (shellcheck)'; Check='shellcheck';    Winget='koalaman.shellcheck';        Scoop='shellcheck' }
+    'l' = @{ Label='Lua                (luacheck)';   Check='luacheck';      Scoop='luacheck';   Manual='install Scoop (https://scoop.sh) then: scoop install luacheck' }
+    'q' = @{ Label='SQL                (sqlfluff)';   Check='__SQLFLUFF__' }                              # pip-installed into revio venv
+    'v' = @{ Label='Verilog            (verilator)'; Check='verilator';     Scoop='verilator';  Manual='install Scoop then: scoop install verilator, or use WSL' }
+    'u' = @{ Label='Ruby               (rubocop)';   Check='rubocop';       Manual='install Ruby + gem install rubocop' }
+    'h' = @{ Label='PHP                (phpstan)';   Check='phpstan';       Manual='install PHP + Composer + composer global require phpstan/phpstan' }
+    'k' = @{ Label='Kotlin             (detekt)';    Check='detekt';        Scoop='detekt';     Manual='needs JDK; download detekt-cli from GitHub' }
+}
 
-Write-Host "    [A] Install ALL languages (recommended for evaluation)"
-Write-Host "    [C] Custom - pick per language"
-Write-Host "    [N] None - skip all (LLM + AST still work; add later)"
-$mode = (Read-Host "    Selection [A/C/N]").Trim().ToUpper()
-if ($mode -eq '') { $mode = 'A' }
+# --- Print the letter-coded menu (two columns to save vertical space) ---
+$letters = @($AnalyzerMap.Keys)
+$rows    = [math]::Ceiling($letters.Count / 2)
+Write-Host ""
+Write-Host "    Static analyzers - type letter codes (no separator needed):" -ForegroundColor White
+Write-Host ""
+for ($i = 0; $i -lt $rows; $i++) {
+    $leftKey  = $letters[$i]
+    $rightKey = if ($i + $rows -lt $letters.Count) { $letters[$i + $rows] } else { $null }
+    $left  = "  [$leftKey]  $($AnalyzerMap[$leftKey].Label)".PadRight(48)
+    $right = if ($rightKey) { "  [$rightKey]  $($AnalyzerMap[$rightKey].Label)" } else { "" }
+    Write-Host "  $left$right"
+}
+Write-Host ""
+Write-Host "    Python (bandit) is auto-installed via the [python] extra." -ForegroundColor DarkGray
+Write-Host ""
+Write-Host "    Type the letters for languages you use, e.g. " -NoNewline
+Write-Host "jcqs" -ForegroundColor Cyan -NoNewline
+Write-Host " for JS+C+SQL+Shell."
+Write-Host "    Or type " -NoNewline; Write-Host "*" -ForegroundColor Cyan -NoNewline; Write-Host " to install ALL, or press " -NoNewline
+Write-Host "Enter" -ForegroundColor Cyan -NoNewline; Write-Host " to skip all."
+Write-Host ""
 
-$selected = @()
-switch ($mode) {
-    'A' { $selected = $AnalyzerMenu | Where-Object { $_.Check -ne '__SQLFLUFF__' -and $_.Default } ; if (-not ($selected | Where-Object { $_.Name -match 'SQL' })) { $selected += $AnalyzerMenu | Where-Object { $_.Check -eq '__SQLFLUFF__' } } ; $selected = $AnalyzerMenu }
-    'N' { Info "skipping all analyzers" }
-    default {
-        Write-Host "    Type Y to install, Enter to skip, for each:" -ForegroundColor DarkGray
-        foreach ($entry in $AnalyzerMenu) {
-            $defChar = if ($entry.Default) { 'y' } else { 'n' }
-            if (Ask-YesNo "      $($entry.Name)?" $defChar) { $selected += $entry }
+$rawSelection = (Read-Host "    Your selection").Trim().ToLower()
+
+# --- Resolve selection into ordered, deduped list of letters ----------------
+$selectedLetters = @()
+if ($rawSelection -eq '*') {
+    $selectedLetters = $letters
+} elseif ($rawSelection -ne '') {
+    # Walk char-by-char, keep order of first appearance, ignore unknown chars
+    $seen = @{}
+    foreach ($ch in $rawSelection.ToCharArray()) {
+        $c = $ch.ToString()
+        if ($AnalyzerMap.Contains($c) -and -not $seen.ContainsKey($c)) {
+            $selectedLetters += $c
+            $seen[$c] = $true
+        } elseif ($c -match '[a-z]' -and -not $AnalyzerMap.Contains($c)) {
+            Warn "unknown letter '$c' - skipping"
         }
     }
 }
 
-foreach ($entry in $selected) {
-    if ($entry.Check -eq '__SQLFLUFF__') {
-        # sqlfluff: pip-install into revio's venv
-        $rc = Invoke-Probe { & $vpy -m sqlfluff --version }
-        if ($rc -eq 0) { Ok 'sqlfluff already in revio venv' }
-        else {
-            Write-Host "    -> $vpy -m pip install sqlfluff" -ForegroundColor DarkGray
-            $ircSql = Invoke-Probe { & $vpy -m pip install sqlfluff }
-            if ($ircSql -eq 0) { Ok 'sqlfluff installed' } else { Warn "sqlfluff install failed (rc=$ircSql)" }
+if ($selectedLetters.Count -eq 0) {
+    Info "no analyzers selected; LLM + AST still work. Re-run installer anytime to add."
+} else {
+    Info "installing: $($selectedLetters -join ', ')"
+    foreach ($code in $selectedLetters) {
+        $entry = $AnalyzerMap[$code]
+        if ($entry.Check -eq '__SQLFLUFF__') {
+            $rc = Invoke-Probe { & $vpy -m sqlfluff --version }
+            if ($rc -eq 0) { Ok 'sqlfluff already in revio venv' }
+            else {
+                Write-Host "    -> $vpy -m pip install sqlfluff" -ForegroundColor DarkGray
+                $ircSql = Invoke-NativeStream { & $vpy -m pip install sqlfluff } '    ' 'Downloading|Installing|Successfully|error|ERROR'
+                if ($ircSql -eq 0) { Ok 'sqlfluff installed' } else { Warn "sqlfluff install failed (rc=$ircSql)" }
+            }
+            continue
         }
-        continue
+        Install-Analyzer -Name $entry.Label -CheckCmd $entry.Check `
+            -WingetId $entry.Winget -ScoopId $entry.Scoop -NpmId $entry.Npm `
+            -ManualHint $entry.Manual | Out-Null
     }
-    Install-Analyzer -Name $entry.Name -CheckCmd $entry.Check `
-        -WingetId $entry.Winget -ScoopId $entry.Scoop -NpmId $entry.Npm -ManualHint $entry.Manual | Out-Null
 }
 
 # === [7/7] Launcher + PATH =================================================

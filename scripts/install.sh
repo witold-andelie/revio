@@ -217,58 +217,103 @@ install_analyzer() {
     return 1
 }
 
-cat <<EOF
-    [A] Install ALL languages (recommended for evaluation)
-    [C] Custom - pick per language
-    [N] None  - skip all (LLM + AST still work; add later)
-EOF
-printf "    Selection [A/C/N]: "
-read -r MODE </dev/tty || MODE=""
-MODE="${MODE:-A}"
-MODE="${MODE^^}"
-
-# Menu: name | check-cmd | brew | apt | npm | manual_hint | default-Y?
-# (use '__SQLFLUFF__' as a sentinel for the pip-into-venv case)
+# Each analyzer keyed by a single mnemonic letter.
+# Format: letter|label|check_cmd|brew|apt|npm|manual_hint
 declare -a ANALYZERS=(
-    "JS/TS (oxlint)|oxlint|oxlint||oxlint||y"
-    "Python (bandit) - already installed via [python] extra|bandit||||(installed)|y"
-    "C/C++ (cppcheck)|cppcheck|cppcheck|cppcheck|||y"
-    "Go (golangci-lint)|golangci-lint|golangci-lint|golangci-lint|||y"
-    "Shell (shellcheck)|shellcheck|shellcheck|shellcheck|||y"
-    "Lua (luacheck)|luacheck|luacheck|lua-check||luarocks install luacheck|n"
-    "SQL (sqlfluff)|__SQLFLUFF__|||||y"
-    "Verilog (verilator)|verilator|verilator|verilator||scoop on Windows or WSL|n"
-    "Rust (clippy)|cargo-clippy|||||rustup component add clippy|n"
-    "Java (spotbugs)|spotbugs|spotbugs|||needs JDK + download|n"
-    "Ruby (rubocop)|rubocop||||gem install rubocop|n"
-    "PHP (phpstan)|phpstan||||composer global require phpstan/phpstan|n"
-    "Kotlin (detekt)|detekt|detekt|||needs JDK|n"
+    "j|JS / TypeScript    (oxlint)|oxlint|oxlint||oxlint|"
+    "c|C / C++            (cppcheck)|cppcheck|cppcheck|cppcheck||"
+    "g|Go                 (golangci-lint)|golangci-lint|golangci-lint|golangci-lint||"
+    "r|Rust               (clippy)|cargo-clippy|||rustup component add clippy"
+    "a|Java               (spotbugs)|spotbugs|spotbugs|||needs JDK + download"
+    "s|Shell              (shellcheck)|shellcheck|shellcheck|shellcheck||"
+    "l|Lua                (luacheck)|luacheck|luacheck|lua-check||luarocks install luacheck"
+    "q|SQL                (sqlfluff)|__SQLFLUFF__|||"
+    "v|Verilog            (verilator)|verilator|verilator|verilator||scoop on Windows or WSL"
+    "u|Ruby               (rubocop)|rubocop||||gem install rubocop"
+    "h|PHP                (phpstan)|phpstan||||composer global require phpstan/phpstan"
+    "k|Kotlin             (detekt)|detekt|detekt|||needs JDK"
 )
 
-run_one() {
-    local entry="$1"
-    IFS='|' read -r name check brew_pkg apt_pkg npm_pkg hint _def <<<"$entry"
-    if [ "$check" = "__SQLFLUFF__" ]; then
-        if "$VPY" -m sqlfluff --version >/dev/null 2>&1; then ok "sqlfluff already in revio venv"; return 0; fi
-        echo "    $(c_dim "-> $VPY -m pip install sqlfluff")"
-        if "$VPY" -m pip install sqlfluff >/dev/null 2>&1; then ok "sqlfluff installed"
-        else warn "sqlfluff install failed"; fi
-        return 0
+# Print menu in two columns
+echo
+echo "    Static analyzers - type letter codes (no separator needed):"
+echo
+TOTAL=${#ANALYZERS[@]}
+HALF=$(( (TOTAL + 1) / 2 ))
+for ((i = 0; i < HALF; i++)); do
+    left_entry="${ANALYZERS[$i]}"
+    IFS='|' read -r lL lLabel _ _ _ _ _ <<<"$left_entry"
+    left="  [$lL]  $lLabel"
+    right_idx=$((i + HALF))
+    if [ $right_idx -lt $TOTAL ]; then
+        IFS='|' read -r rL rLabel _ _ _ _ _ <<<"${ANALYZERS[$right_idx]}"
+        printf "  %-48s  [%s]  %s\n" "$left" "$rL" "$rLabel"
+    else
+        printf "  %s\n" "$left"
     fi
-    install_analyzer "$name" "$check" "$brew_pkg" "$apt_pkg" "$npm_pkg" "$hint"
+done
+echo
+echo "    $(c_dim 'Python (bandit) is auto-installed via the [python] extra.')"
+echo
+echo "    Type the letters for languages you use, e.g. $(c_cyan jcqs) for JS+C+SQL+Shell."
+echo "    Or type $(c_cyan '*') to install ALL, or press $(c_cyan 'Enter') to skip all."
+echo
+printf "    Your selection: "
+read -r RAW </dev/tty || RAW=""
+RAW="${RAW,,}"        # lowercase
+RAW="${RAW// /}"      # strip spaces
+
+# Resolve selection into ordered, deduped list of letters
+declare -a SELECTED=()
+if [ "$RAW" = "*" ]; then
+    for entry in "${ANALYZERS[@]}"; do
+        IFS='|' read -r letter _ _ _ _ _ _ <<<"$entry"
+        SELECTED+=("$letter")
+    done
+elif [ -n "$RAW" ]; then
+    declare -A SEEN=()
+    for ((i = 0; i < ${#RAW}; i++)); do
+        c="${RAW:$i:1}"
+        # Look up the analyzer with this letter
+        found=""
+        for entry in "${ANALYZERS[@]}"; do
+            IFS='|' read -r letter _ _ _ _ _ _ <<<"$entry"
+            if [ "$letter" = "$c" ]; then found="$c"; break; fi
+        done
+        if [ -n "$found" ] && [ -z "${SEEN[$c]:-}" ]; then
+            SELECTED+=("$c"); SEEN[$c]=1
+        elif [ -z "$found" ] && [[ "$c" =~ [a-z] ]]; then
+            warn "unknown letter '$c' - skipping"
+        fi
+    done
+fi
+
+run_one() {
+    local letter="$1"
+    for entry in "${ANALYZERS[@]}"; do
+        IFS='|' read -r l label check brew_pkg apt_pkg npm_pkg hint <<<"$entry"
+        if [ "$l" = "$letter" ]; then
+            if [ "$check" = "__SQLFLUFF__" ]; then
+                if "$VPY" -m sqlfluff --version >/dev/null 2>&1; then ok "sqlfluff already in revio venv"; return 0; fi
+                echo "    $(c_dim "-> $VPY -m pip install sqlfluff")"
+                if "$VPY" -m pip install sqlfluff >/dev/null 2>&1; then ok "sqlfluff installed"
+                else warn "sqlfluff install failed"; fi
+                return 0
+            fi
+            install_analyzer "$label" "$check" "$brew_pkg" "$apt_pkg" "$npm_pkg" "$hint"
+            return $?
+        fi
+    done
 }
 
-case "$MODE" in
-    A) for entry in "${ANALYZERS[@]}"; do run_one "$entry" || true; done ;;
-    N) info "skipping all analyzers" ;;
-    *)
-        echo "    Type Y to install, Enter to skip, for each:"
-        for entry in "${ANALYZERS[@]}"; do
-            IFS='|' read -r name _ _ _ _ _ def <<<"$entry"
-            if ask_yes_no "      $name?" "$def"; then run_one "$entry" || true; fi
-        done
-        ;;
-esac
+if [ ${#SELECTED[@]} -eq 0 ]; then
+    info "no analyzers selected; LLM + AST still work. Re-run installer anytime to add."
+else
+    info "installing: ${SELECTED[*]}"
+    for letter in "${SELECTED[@]}"; do
+        run_one "$letter" || true
+    done
+fi
 
 # === [7/7] Launcher + PATH ==================================================
 
