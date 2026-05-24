@@ -32,6 +32,20 @@ revio is the tool I built to handle exactly that.
 - **~$0.01 / audit on DeepSeek-V4**. Cheap enough for every commit hook.
 - **Multilingual** — ask in Chinese, get Chinese findings. Tool args stay English so CI logs grep the same in every locale.
 
+🎯 **How revio compares to existing tools**:
+
+| | SonarQube / Snyk / ESLint | GitHub Copilot Review / CodeRabbit / Greptile | revio |
+|---|---|---|---|
+| Static-rule layer | ✅ but no LLM | ❌ pure LLM | ✅ 13 analyzers + LLM on top |
+| Hallucinated paths | n/a | common failure mode | ✅ grounding validator rejects them |
+| Actually applies fixes | ❌ "violation" reports | ❌ suggestions only | ✅ `--fix` writes to disk + multi-step undo |
+| AI-generated redundancy detection | ❌ | ❌ | ✅ `dedup` is a first-class mode |
+| Self-hosted / on-prem LLM | ✅ (no LLM) | ❌ vendor cloud only | ✅ any OpenAI-compat endpoint, any size |
+| Cites your guidelines | limited custom rules | ❌ | ✅ RAG over `.md/.pdf/.docx` |
+| PLC / industrial control | ❌ | ❌ | ✅ 7 vendor parsers, 30+ PLCopen rules |
+| Cost per audit | seat-based licensing | $20-$100/seat/month | **$0.01 (DeepSeek) or $0 (local)** |
+| License | proprietary | proprietary SaaS | **MIT** |
+
 → **https://github.com/witold-andelie/revio**
 
 #AIcodeReview #VibeCoding #CodeQuality #StaticAnalysis #LangGraph #DeveloperTools #DevSecOps #OpenSource
@@ -61,6 +75,9 @@ revio ships with 17 language profiles. The CS mainstream (JS / TS / Python / Rus
 
 **3. FERPA-compliant by architecture.**
 revio supports any OpenAI-compatible endpoint — Ollama on a workstation, vLLM on a departmental GPU server, or full-size frontier weights on a research cluster. Student code never leaves your network.
+
+**How this compares to what's already on offer.**
+SonarQube / Snyk Code give static-rule reports but no semantic reasoning — they will not tell a student WHY a function is unnecessary or WHICH duplicate to keep. LLM-based reviewers (GitHub Copilot for Code Review, CodeRabbit, Greptile) reason semantically but fabricate file paths, send code to US-hosted APIs, and do not actually apply fixes. revio sits between the two: deterministic analyzers feed evidence into a LangGraph agent that reasons over it, the grounding validator rejects any finding citing a file the agent did not read, and `dedup --fix` lands real diffs. It is the only option I am aware of that combines (a) ground-truth static analysis (b) LLM semantic context (c) on-prem deployment (d) industrial PLC + Verilog coverage in one tool.
 
 Other features for academic context:
 - **RAG** over `.md / .pdf / .docx` — index your course syllabi, and findings cite them directly.
@@ -104,6 +121,12 @@ Best regards,
 → 自动找出 AI 写代码的**重复函数 / 死代码 / 没用的包装层**
 → **真的帮你改文件、删冗余、合并重复**
 → 改错了？`revio fix undo` 一键还原（不依赖 git！）
+
+💥 **跟别的工具比有啥优势？**
+- **SonarQube / ESLint / Snyk**：只给一堆规则违反清单，不会推理上下文，更不会改文件
+- **GitHub Copilot Review / CodeRabbit / Cursor 的 review**：会瞎编不存在的文件路径，而且代码会上传到他们的云
+- **revio**：13 个静态分析器**做地基** + LLM **做语义** + grounding 验证器**杀幻觉** + 真改文件 + 可本地跑
+- 而且**专门针对 AI 写的屎山代码**做了 dedup 模式——这是别家都没有的
 
 🌏 **支持中文！**
 你用中文提问 → 它**用中文回答**
@@ -157,14 +180,20 @@ Best regards,
 不是 GPT 那种"建议你重构一下"
 是**真改 真删 真合并**
 
-【26-40 秒 · 其它武器】
-revio 不只去重——
-- 13 个工业级静态分析器 + AI 推理
-- 17 种语言（连工业 PLC 都能扫）
-- 中文问 → 中文答 🇨🇳
-- 接本地大模型 → 数据**绝不外泄**
+【26-38 秒 · 跟其它工具对比】
+SonarQube？只能列规则，不懂上下文，更不会改代码
+GitHub Copilot Review / CodeRabbit？会瞎编路径，代码全传美国服务器
+传统 IDE 插件？只看单文件，跨模块重复发现不了
+**revio = 13 个静态分析器 + AI 推理 + 反幻觉 + 真改代码 + 可本地跑**
+全网就这一个
 
-【41-55 秒 · 多便宜 + 怎么装】
+【39-50 秒 · 其它武器】
+revio 不只去重——
+- 17 种语言（连工业 PLC 都能扫，独家！）
+- 中文问 → 中文答 🇨🇳
+- 接本地大模型 → 数据**绝不外泄**（银行/医院/高校都能用）
+
+【51-55 秒 · 多便宜 + 怎么装】
 接 DeepSeek API → 一次审查 ≈ **¥0.07**
 本地跑 Ollama → **完全免费**
 一键安装：macOS / Linux / Windows 都行
@@ -193,7 +222,7 @@ GitHub 搜 **witold-andelie/revio**
 ✦ 中文问 中文答
 ✦ 一次审查 ≈ ¥0.07，本地跑免费
 
-### Version B · 进阶（130 字）
+### Version B · 进阶（150 字）
 
 🔗 **github.com/witold-andelie/revio**（MIT 开源）
 
@@ -201,11 +230,11 @@ GitHub 搜 **witold-andelie/revio**
 
 ✦ `revio dedup --fix`：找出 AI 留下的重复函数 / 死代码 / 单次使用的包装层，**真的帮你改文件**
 ✦ 改错了？**一键 undo**（不依赖 git）
-✦ 顺带还有 13 个工业级静态分析器（17 种语言含 PLC）
-✦ 中文问 中文答 · 接本地大模型不外传数据
+✦ 跟 SonarQube 不同：有 LLM 推理 + 真改代码
+✦ 跟 Copilot Review 不同：13 个静态分析器底子 + 反幻觉 + 可本地跑
 ✦ 一次审查 ¥0.07，本地免费
 
-### Version C · 同行群（200 字 · 最详细）
+### Version C · 同行群（260 字 · 最详细）
 
 🔗 **github.com/witold-andelie/revio**（MIT 开源）
 
@@ -216,13 +245,20 @@ GitHub 搜 **witold-andelie/revio**
 - 一行 `revio dedup --fix` 真的帮你改文件
 - 快照式 undo · 不依赖 git · 任何编辑器都能用
 
+**和现有工具的区别**：
+| 工具 | 短板 | revio 怎么补 |
+|---|---|---|
+| SonarQube / ESLint / Snyk | 只列规则违反，不懂上下文，不改代码 | LLM 推理 + 真改文件 |
+| Copilot Review / CodeRabbit / Greptile | 瞎编路径 / 代码上传美国 / 锁死一家 LLM | grounding 反幻觉 + 任意本地大模型 |
+| IDE 插件 | 进不了 CI · 单文件视角 · 不抓跨模块重复 | CLI-first + 全仓视角 + dedup 模式 |
+| 人工 review | 被 AI 生成 PR 淹死 | 自动化分担 |
+
 **其它亮点**：
 - 13 个工业级静态分析器 + LangGraph 智能体
 - 17 种语言（**工业 PLC + Verilog** 全网独一份）
 - 中文问中文答（德/法/西/捷/日同理）
-- 接任意 OpenAI 兼容端点（含本地 Ollama / vLLM）
 - 成本 ¥0.07/次 (DeepSeek)，本地跑免费
-- FERPA / HIPAA / GDPR 合规友好
+- FERPA / HIPAA / GDPR / EU 合规友好
 
 🔗 **github.com/witold-andelie/revio**
 
