@@ -179,6 +179,10 @@ def run_repl():
 
 
 def _print_banner(cfg: Config, state: dict) -> None:
+    from .mascot import play_startup_animation
+
+    _console.print()
+    play_startup_animation(_console)
     _console.print()
     _console.print(
         Panel(
