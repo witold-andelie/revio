@@ -57,9 +57,11 @@ def load_all_profiles() -> None:
     for module_name in (
         # Full Layer 1 + Layer 2 profiles
         "js", "python", "rust", "java", "go", "cpp",
-        # Stub (M4 will fill PLC vendor parsers + rules)
+        # Phase-2 deep profiles (Tree-sitter + dedicated linter)
+        "shell", "lua", "sql", "ruby", "php", "kotlin",
+        # PLC vendor parsers + 30 PLCopen rules
         "plc",
-        # Generic Tree-sitter fallback (Ruby/PHP/Lua/SQL/Julia/Scala/Kotlin/Swift/Shell/C#)
+        # Generic Tree-sitter fallback (Julia/Scala/Swift/C# — no dedicated linter yet)
         "generic",
         # LLM-only fallback profiles (no Tree-sitter grammar packaged)
         "matlab", "r", "verilog", "sas", "cobol", "solidity",

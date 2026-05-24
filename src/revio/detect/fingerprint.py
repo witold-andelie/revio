@@ -90,17 +90,18 @@ _LANG_PROFILE: dict[str, str] = {
     "go": "go",
     "c": "cpp",       # cppcheck handles both C and C++
     "cpp": "cpp",
-    # --- Generic profile (Tree-sitter AST only) ---
-    "kotlin": "generic",
+    # --- Phase-2 deep profiles (Tree-sitter + dedicated linter) ---
+    "kotlin": "kotlin",
+    "ruby": "ruby",
+    "php": "php",
+    "lua": "lua",
+    "sql": "sql",
+    "shell": "shell",
+    # --- Generic profile (Tree-sitter AST only, no dedicated linter yet) ---
     "scala": "generic",
     "c_sharp": "generic",
-    "ruby": "generic",
-    "php": "generic",
     "swift": "generic",
-    "lua": "generic",
     "julia": "generic",
-    "sql": "generic",
-    "shell": "generic",
     # --- LLM-only profiles (no Tree-sitter grammar) ---
     "matlab": "matlab",
     "r": "r",

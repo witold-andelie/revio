@@ -128,6 +128,18 @@ function Install-Analyzer($name, $checkCmd, $wingetId, $scoopId, $npmId) {
 Install-Analyzer 'oxlint'        'oxlint'        ''                              ''         'oxlint'
 Install-Analyzer 'cppcheck'      'cppcheck'      'Cppcheck.Cppcheck'             'cppcheck' ''
 Install-Analyzer 'golangci-lint' 'golangci-lint' 'golangci-lint.golangci-lint'   'golangci-lint' ''
+Install-Analyzer 'shellcheck'    'shellcheck'    'koalaman.shellcheck'           'shellcheck' ''
+Install-Analyzer 'luacheck'      'luacheck'      ''                              'luacheck' ''
+# sqlfluff is a pip package — install into revio's venv directly
+$sqlfluffCheck = & $vpy -m sqlfluff --version 2>$null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "  → pip install sqlfluff (into revio venv)" -ForegroundColor DarkGray
+    try { & $vpy -m pip install --quiet sqlfluff 2>$null | Out-Null; Ok "sqlfluff installed" } catch { Warn "sqlfluff install failed" }
+} else {
+    Ok "sqlfluff already in revio venv"
+}
+# Ruby (rubocop), PHP (phpstan), Kotlin (detekt) need their own toolchains —
+# documented in the README install table.
 # spotbugs needs JDK — leave to user
 # clippy ships with rustup — leave to user
 

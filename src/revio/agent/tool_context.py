@@ -27,9 +27,15 @@ if TYPE_CHECKING:
     from ..layers.static.bandit import BanditRunner
     from ..layers.static.clippy import ClippyRunner
     from ..layers.static.cppcheck import CppcheckRunner
+    from ..layers.static.detekt import DetektRunner
     from ..layers.static.golangci_lint import GolangCILintRunner
+    from ..layers.static.luacheck import LuacheckRunner
     from ..layers.static.oxlint import OxlintRunner
+    from ..layers.static.phpstan import PhpstanRunner
+    from ..layers.static.rubocop import RubocopRunner
+    from ..layers.static.shellcheck import ShellcheckRunner
     from ..layers.static.spotbugs import SpotBugsRunner
+    from ..layers.static.sqlfluff import SqlfluffRunner
     from ..skills import SkillActivation, SkillsRegistry
 
 
@@ -64,6 +70,18 @@ class ToolContext:
     _golangci_unavailable: bool = field(default=False, init=False, repr=False)
     _cppcheck_runner: "CppcheckRunner | None" = field(default=None, init=False, repr=False)
     _cppcheck_unavailable: bool = field(default=False, init=False, repr=False)
+    _shellcheck_runner: "ShellcheckRunner | None" = field(default=None, init=False, repr=False)
+    _shellcheck_unavailable: bool = field(default=False, init=False, repr=False)
+    _luacheck_runner: "LuacheckRunner | None" = field(default=None, init=False, repr=False)
+    _luacheck_unavailable: bool = field(default=False, init=False, repr=False)
+    _sqlfluff_runner: "SqlfluffRunner | None" = field(default=None, init=False, repr=False)
+    _sqlfluff_unavailable: bool = field(default=False, init=False, repr=False)
+    _rubocop_runner: "RubocopRunner | None" = field(default=None, init=False, repr=False)
+    _rubocop_unavailable: bool = field(default=False, init=False, repr=False)
+    _phpstan_runner: "PhpstanRunner | None" = field(default=None, init=False, repr=False)
+    _phpstan_unavailable: bool = field(default=False, init=False, repr=False)
+    _detekt_runner: "DetektRunner | None" = field(default=None, init=False, repr=False)
+    _detekt_unavailable: bool = field(default=False, init=False, repr=False)
     _rag_retriever: "GuidelineRetriever | None" = field(default=None, init=False, repr=False)
     _rag_unavailable: bool = field(default=False, init=False, repr=False)
     _skills_registry: "SkillsRegistry | None" = field(default=None, init=False, repr=False)
@@ -195,6 +213,96 @@ class ToolContext:
                 self._cppcheck_unavailable = True
                 return None
         return self._cppcheck_runner
+
+    @property
+    def shellcheck(self) -> "ShellcheckRunner | None":
+        if self._shellcheck_unavailable:
+            return None
+        if self._shellcheck_runner is None:
+            try:
+                from ..layers.static.shellcheck import ShellcheckRunner
+
+                self._shellcheck_runner = ShellcheckRunner()
+            except Exception as e:
+                logger.warning("shellcheck unavailable: %s", e)
+                self._shellcheck_unavailable = True
+                return None
+        return self._shellcheck_runner
+
+    @property
+    def luacheck(self) -> "LuacheckRunner | None":
+        if self._luacheck_unavailable:
+            return None
+        if self._luacheck_runner is None:
+            try:
+                from ..layers.static.luacheck import LuacheckRunner
+
+                self._luacheck_runner = LuacheckRunner()
+            except Exception as e:
+                logger.warning("luacheck unavailable: %s", e)
+                self._luacheck_unavailable = True
+                return None
+        return self._luacheck_runner
+
+    @property
+    def sqlfluff(self) -> "SqlfluffRunner | None":
+        if self._sqlfluff_unavailable:
+            return None
+        if self._sqlfluff_runner is None:
+            try:
+                from ..layers.static.sqlfluff import SqlfluffRunner
+
+                self._sqlfluff_runner = SqlfluffRunner()
+            except Exception as e:
+                logger.warning("sqlfluff unavailable: %s", e)
+                self._sqlfluff_unavailable = True
+                return None
+        return self._sqlfluff_runner
+
+    @property
+    def rubocop(self) -> "RubocopRunner | None":
+        if self._rubocop_unavailable:
+            return None
+        if self._rubocop_runner is None:
+            try:
+                from ..layers.static.rubocop import RubocopRunner
+
+                self._rubocop_runner = RubocopRunner()
+            except Exception as e:
+                logger.warning("rubocop unavailable: %s", e)
+                self._rubocop_unavailable = True
+                return None
+        return self._rubocop_runner
+
+    @property
+    def phpstan(self) -> "PhpstanRunner | None":
+        if self._phpstan_unavailable:
+            return None
+        if self._phpstan_runner is None:
+            try:
+                from ..layers.static.phpstan import PhpstanRunner
+
+                self._phpstan_runner = PhpstanRunner()
+            except Exception as e:
+                logger.warning("phpstan unavailable: %s", e)
+                self._phpstan_unavailable = True
+                return None
+        return self._phpstan_runner
+
+    @property
+    def detekt(self) -> "DetektRunner | None":
+        if self._detekt_unavailable:
+            return None
+        if self._detekt_runner is None:
+            try:
+                from ..layers.static.detekt import DetektRunner
+
+                self._detekt_runner = DetektRunner()
+            except Exception as e:
+                logger.warning("detekt unavailable: %s", e)
+                self._detekt_unavailable = True
+                return None
+        return self._detekt_runner
 
     # ---- Skills ----
 

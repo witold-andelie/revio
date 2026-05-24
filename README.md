@@ -22,8 +22,8 @@ $ revio review --commit HEAD
 | | What |
 |---|---|
 | **3 modes** | `review` (diff) · `audit` (full repo) · `dedup` (find AI redundancy) |
-| **17 languages** | JS/TS · Python · Rust · Java · Go · C/C++ · 10 generic · PLC · 9 LLM-only |
-| **6 static analyzers** | oxlint · bandit · clippy · spotbugs · golangci-lint · cppcheck |
+| **17 languages** | JS/TS · Python · Rust · Java · Go · C/C++ · Shell · Lua · SQL · Ruby · PHP · Kotlin · 4 generic · PLC · 9 LLM-only |
+| **12 static analyzers** | oxlint · bandit · clippy · spotbugs · golangci-lint · cppcheck · **shellcheck** · **luacheck** · **sqlfluff** · **rubocop** · **phpstan** · **detekt** |
 | **PLC support** | 7 vendor parsers · 30+ PLCopen rules · HW audit · LD/FBD/SFC → ST |
 | **RAG** | Index your company's coding guidelines, cited inline in findings |
 | **Skills** | Anthropic Agent Skills spec, dual-layer (project + user) |
@@ -85,6 +85,12 @@ pip install "git+https://github.com/witold-andelie/revio.git#egg=revio[js,plc,py
 | Go | golangci-lint | `brew install golangci-lint` | `winget install golangci-lint.golangci-lint` |
 | Rust | clippy | `rustup component add clippy` | `rustup component add clippy` |
 | Java | spotbugs | `brew install spotbugs` (needs JDK) | download from spotbugs.github.io |
+| Shell | shellcheck | `brew install shellcheck` / `apt install shellcheck` | `winget install koalaman.shellcheck` |
+| Lua | luacheck | `brew install luacheck` / `luarocks install luacheck` | `scoop install luacheck` |
+| SQL | sqlfluff | (auto-installed into revio's venv) | (auto-installed into revio's venv) |
+| Ruby | rubocop | `gem install rubocop` | `gem install rubocop` (needs Ruby) |
+| PHP | phpstan | `composer global require phpstan/phpstan` | (same; needs PHP + Composer) |
+| Kotlin | detekt | `brew install detekt` (needs JDK) | download `detekt-cli` from GitHub |
 
 **Missing analyzers don't break anything** — revio detects what's installed and falls back to AST + LLM reasoning for the rest.
 
@@ -291,7 +297,13 @@ Non-slash input is classified by an intent LLM into `review` / `audit` /
 | `go` | Tree-sitter | **golangci-lint** |
 | `cpp` | Tree-sitter | **cppcheck** |
 | `plc` | 7 vendor parsers + LD/FBD/SFC | **30+ PLCopen rules** + HW audit |
-| `generic` | Tree-sitter (Kotlin / Scala / C# / Ruby / PHP / Swift / Lua / Julia / SQL / Shell) | — |
+| `shell` | Tree-sitter | **shellcheck** |
+| `lua` | Tree-sitter | **luacheck** |
+| `sql` | Tree-sitter | **sqlfluff** (multi-dialect) |
+| `ruby` | Tree-sitter | **rubocop** |
+| `php` | Tree-sitter | **phpstan** |
+| `kotlin` | Tree-sitter | **detekt** (needs JDK) |
+| `generic` | Tree-sitter (Scala / C# / Swift / Julia) | — |
 | LLM-only | MATLAB · R · Verilog · SAS · COBOL · Solidity · Zig · ObjC · Dart | — |
 
 Default `auto` walks the repo, counts file extensions + marker files,

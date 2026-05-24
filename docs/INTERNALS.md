@@ -1046,6 +1046,7 @@ pyproject.toml: [project.scripts]
 | `tests/test_plc_smoke.py` | PLC parser core, 23 rule violations on fixture, PLC-006 regex bug fix verification | Deterministic |
 | `tests/test_patch_smoke.py` | PatchApplier: serialization, can_apply pre-flight, apply, git safety, preview, propose_patch tool | Deterministic |
 | `tests/test_fix_history_smoke.py` | Fix-history: apply→undo (no git), undo-of-undo=redo, target old session, oversized files skipped, auto-rotation at cap | Deterministic |
+| `tests/test_phase2_linters_smoke.py` | 6 phase-2 linters: shellcheck/sqlfluff live subprocess; luacheck/rubocop/phpstan/detekt NotInstalled fallbacks; ToolContext lazy properties | Deterministic (gated on binary presence) |
 
 Each test should run in **under 10 seconds** (no real API calls; PLC tests
 needs Python imports only; MCP test launches a stub subprocess).

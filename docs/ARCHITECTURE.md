@@ -17,7 +17,7 @@ grounding validator, and (in dedup mode) applies code-modification patches
 to real files with git-stash safety nets.
 
 **Bottom line**: not "another LLM that reads code" — a layered system where
-the LLM is the orchestrator above 6 deterministic analyzers, 18 Tree-sitter
+the LLM is the orchestrator above 12 deterministic analyzers, 18 Tree-sitter
 grammars, RAG, and ~30 specialized tools.
 
 ---
@@ -173,18 +173,24 @@ Most "LLM code review" tools have **no static layer at all** — they rely on
 the LLM to spot every issue from raw source. That's where hallucination
 and false positives come from.
 
-revio wires 6 best-in-class analyzers, **one per major language**:
+revio wires 12 best-in-class analyzers, **one per major language**:
 
 ```mermaid
 flowchart LR
     src["Source file<br/>(any language)"] --> dispatcher{Detect<br/>profile}
     
-    dispatcher -->|.ts/.tsx/.js| oxlint["oxlint<br/>500+ rules<br/>Rust-based, ~50ms"]
-    dispatcher -->|.py| bandit["bandit<br/>Python security<br/>CWE-mapped"]
-    dispatcher -->|.rs| clippy["clippy<br/>600+ Rust lints"]
-    dispatcher -->|.java| spotbugs["spotbugs<br/>FindBugs successor<br/>+ FindSecBugs"]
-    dispatcher -->|.go| golangci["golangci-lint<br/>100+ linters<br/>(govet+staticcheck+gosec+...)"]
-    dispatcher -->|.c/.cpp| cppcheck["cppcheck<br/>buffer/null/uninit/UAF"]
+    dispatcher -->|.ts/.tsx/.js| oxlint["oxlint"]
+    dispatcher -->|.py| bandit["bandit"]
+    dispatcher -->|.rs| clippy["clippy"]
+    dispatcher -->|.java| spotbugs["spotbugs"]
+    dispatcher -->|.go| golangci["golangci-lint"]
+    dispatcher -->|.c/.cpp| cppcheck["cppcheck"]
+    dispatcher -->|.sh/.bash| shellcheck["shellcheck"]
+    dispatcher -->|.lua| luacheck["luacheck"]
+    dispatcher -->|.sql| sqlfluff["sqlfluff<br/>(20+ dialects)"]
+    dispatcher -->|.rb| rubocop["rubocop"]
+    dispatcher -->|.php| phpstan["phpstan"]
+    dispatcher -->|.kt/.kts| detekt["detekt"]
     dispatcher -->|.st/.iecst| plc["30+ PLCopen rules<br/>3 levels: pattern/structural/semantic"]
     
     oxlint --> autoEmit["Auto-emit to state<br/>(no LLM re-emit needed)"]
@@ -193,6 +199,12 @@ flowchart LR
     spotbugs --> autoEmit
     golangci --> autoEmit
     cppcheck --> autoEmit
+    shellcheck --> autoEmit
+    luacheck --> autoEmit
+    sqlfluff --> autoEmit
+    rubocop --> autoEmit
+    phpstan --> autoEmit
+    detekt --> autoEmit
     plc --> autoEmit
     
     autoEmit --> agentReport["Final report"]
@@ -208,6 +220,12 @@ flowchart LR
 | **spotbugs** | FindBugs successor; FindSecBugs plugin for OWASP coverage |
 | **golangci-lint** | bundles 100+ Go linters with one config; the industry standard |
 | **cppcheck** | BSD-licensed; ships in every package manager; catches the CWEs that matter (119/416/476/787) |
+| **shellcheck** | 18k★ on GitHub; the only serious choice for bash/sh/zsh; rules cover word-splitting, quoting, $IFS pitfalls, exit-code masking |
+| **luacheck** | Lua community standard; mature; single binary; catches global pollution, shadowing, control-flow issues |
+| **sqlfluff** | only major SQL linter with dialect auto-detection (postgres / mysql / snowflake / bigquery / redshift / sqlite / ...); pip-installable |
+| **rubocop** | Ruby community standard; style + perf + security cops in one tool; supports auto-fix |
+| **phpstan** | level-based incremental adoption (0-9); finds type errors, dead code, deprecated API without running the code |
+| **detekt** | the Kotlin lint standard (especially for Android & server-side Kotlin); style + complexity + potential bugs + naming conventions |
 
 **Why "auto-emit"** (a real innovation): static analyzers are deterministic.
 If we wait for the LLM to "see" their output and then call `report_finding`,
@@ -216,7 +234,7 @@ wrong). Instead: the tool pushes its findings *directly* into agent state
 via `ctx.pending_findings`. LLM sees them, can add semantic context, but
 they're already guaranteed to appear in the report.
 
-> Layer 2 source: `src/revio/layers/static/{oxlint,bandit,clippy,spotbugs,golangci_lint,cppcheck,plc_rules,plc_cfg,plc_hw_config}.py`
+> Layer 2 source: `src/revio/layers/static/{oxlint,bandit,clippy,spotbugs,golangci_lint,cppcheck,shellcheck,luacheck,sqlfluff,rubocop,phpstan,detekt,plc_rules,plc_cfg,plc_hw_config}.py`
 > Auto-emit mechanism: `src/revio/agent/tool_context.py` (`pending_findings` field)
 > + `src/revio/agent/graph.py` (drain after each tool call).
 
@@ -929,7 +947,7 @@ competitor at the time of writing.
 
 ## 15. One-line value props (slide bullets)
 
-- **"Static analysis depth meets LLM reasoning width"** — 6 deterministic analyzers + 17 language profiles + Claude/DeepSeek/Ollama
+- **"Static analysis depth meets LLM reasoning width"** — 12 deterministic analyzers + 17 language profiles + Claude/DeepSeek/Ollama
 - **"Never burns the LLM context"** — Tree-sitter as fact provider, agent fetches functions on demand (95% token savings)
 - **"Hallucination-resistant by construction"** — Hypothesis-evidence findings + grounding validator that rejects fabricated paths
 - **"Your rules, agent's eyes"** — RAG over `.md/.pdf/.docx` company guidelines; agent cites § X.Y.Z directly in findings

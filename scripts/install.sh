@@ -127,8 +127,20 @@ install_analyzer() {
 install_analyzer "oxlint"        "oxlint"        "oxlint"        ""
 install_analyzer "cppcheck"      "cppcheck"      "cppcheck"      "cppcheck"
 install_analyzer "golangci-lint" "golangci-lint" "golangci-lint" "golangci-lint"
-# spotbugs needs a JDK — leave to user
-# clippy ships with rustup — leave to user
+install_analyzer "shellcheck"    "shellcheck"    "shellcheck"    "shellcheck"
+install_analyzer "luacheck"      "luacheck"      "luacheck"      "lua-check"
+# sqlfluff is a pip package — installed above with the [languages] extras? No.
+# It's not in pyproject extras, so install it now into revio's venv:
+if ! "$VPY" -m sqlfluff --version >/dev/null 2>&1; then
+    echo "  $(c_dim "→ pip install sqlfluff (into revio venv)")"
+    "$VPY" -m pip install --quiet sqlfluff >/dev/null 2>&1 && ok "sqlfluff installed" \
+        || warn "sqlfluff install failed — falls back gracefully"
+else
+    ok "sqlfluff already in revio venv"
+fi
+# Ruby (rubocop) needs `gem`, PHP (phpstan) needs `composer`, Kotlin (detekt)
+# needs a JDK — too varied to standardize. Documented in the README install table.
+# clippy ships with rustup; spotbugs needs a JDK — leave to user
 
 # --- PATH hint + finale ------------------------------------------------------
 
