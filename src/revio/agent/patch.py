@@ -106,12 +106,16 @@ class PatchApplier:
 
     SESSION_STASH_PREFIX = "revio --fix safety stash"
 
-    def __init__(self, repo_root: Path | str):
+    def __init__(self, repo_root: Path | str, *, history_store=None):
         self.repo_root = Path(repo_root).expanduser().resolve()
         if not self.repo_root.is_dir():
             raise FileNotFoundError(f"repo root not found: {self.repo_root}")
         self._session_stash_ref: str | None = None
         self._applied_patches: list[PatchSet] = []
+        # Optional FixHistoryStore for snapshot-based undo. When set,
+        # apply() snapshots affected files before each patchset and
+        # finalize is called on end_session.
+        self._history_store = history_store
 
     # ---- Pre-flight checks --------------------------------------------------
 
@@ -241,9 +245,13 @@ class PatchApplier:
     # ---- Session lifecycle --------------------------------------------------
 
     def begin_session(self, *, allow_dirty: bool = False) -> None:
-        """Create a git stash so the entire session can be reverted later."""
+        """Open a fix session: snapshot history + git stash if available."""
+        # Always start the fix-history session — works without git too.
+        if self._history_store is not None:
+            self._history_store.begin_session()
+
         if not self._is_git_repo():
-            logger.warning("not a git repo — no safety stash will be created")
+            logger.info("not a git repo — falling back to snapshot-only undo")
             return
 
         if not allow_dirty and self._has_uncommitted_changes():
@@ -268,14 +276,21 @@ class PatchApplier:
                 ) from e
 
     def end_session(self) -> None:
-        """No-op for now — applied patches stay applied.
+        """Finalize the fix-history session and leave any git stash in place.
 
-        We leave the safety stash in place if any was created — the user
-        can `git stash list` to see it and `git stash pop` to revert.
+        After this returns, `revio fix undo` works against the recorded
+        session. git-stash users additionally have the manual fallback.
         """
+        if self._history_store is not None:
+            try:
+                self._history_store.finalize()
+            except Exception as e:
+                logger.warning("fix_history finalize failed: %s", e)
+
         if self._session_stash_ref:
             logger.info(
-                "revio: %d patches applied. Undo via: git reset --hard HEAD; git stash pop",
+                "revio: %d patches applied. Undo via `revio fix undo` "
+                "(or manually: git reset --hard HEAD; git stash pop)",
                 len(self._applied_patches),
             )
 
@@ -287,10 +302,19 @@ class PatchApplier:
         if not ok:
             raise PatchApplyError(f"cannot apply patchset {patchset.title!r}: {reason}")
 
+        # Snapshot affected files BEFORE applying — this is the undo path.
+        if self._history_store is not None:
+            try:
+                self._history_store.snapshot_files(patchset)
+            except Exception as e:
+                logger.warning("fix_history snapshot failed: %s — undo may be partial", e)
+
         for op in patchset.ops:
             self._apply_op(op)
 
         self._applied_patches.append(patchset)
+        if self._history_store is not None:
+            self._history_store.add_applied(patchset)
 
     def _apply_op(self, op: PatchOp) -> None:
         full = self._resolve(op.file_path)

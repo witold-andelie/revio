@@ -87,6 +87,7 @@ def run_fix_flow(
     min_confidence: float = 0.95,
     allow_dirty: bool = False,
     console: Console | None = None,
+    config=None,
 ) -> FixSessionResult:
     """Walk through proposed patches with confirmation. Returns a summary.
 
@@ -108,7 +109,21 @@ def run_fix_flow(
         console.print("  [yellow]·[/] No patches proposed by the agent.")
         return result
 
-    applier = PatchApplier(repo_root)
+    # Build a FixHistoryStore so undo works without git too. dry_run skips
+    # this (nothing to undo) — saves a directory creation.
+    history_store = None
+    if not dry_run and config is not None:
+        from ..agent.fix_history import FixHistoryStore
+
+        history_store = FixHistoryStore(
+            repo_root=repo_root,
+            checkpoint_dir=config.agent.checkpoint_dir,
+            max_sessions=config.fix_history.max_sessions,
+            max_age_days=config.fix_history.max_age_days,
+            max_file_bytes=config.fix_history.max_file_bytes,
+        )
+
+    applier = PatchApplier(repo_root, history_store=history_store)
 
     # Session-level safety
     if not dry_run:

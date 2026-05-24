@@ -78,6 +78,19 @@ class FixConfig(BaseModel):
     min_confidence_for_yes: float = Field(default=0.95, ge=0.0, le=1.0)
 
 
+class FixHistoryConfig(BaseModel):
+    """Bounds for the auto-managed fix-undo history.
+
+    Each `--fix` session snapshots affected files BEFORE applying so the
+    user can `revio fix undo` later (no git required). These caps prevent
+    the cache directory from growing unbounded.
+    """
+
+    max_sessions: int = Field(default=50, ge=1, le=10_000)
+    max_age_days: int = Field(default=30, ge=1, le=3650)
+    max_file_bytes: int = Field(default=1_048_576, ge=1024)  # 1 MiB
+
+
 class MCPServerSpec(BaseModel):
     """One MCP server entry in the user's config."""
 
@@ -108,6 +121,7 @@ class Config(BaseModel):
     profile: ProfileConfig = Field(default_factory=ProfileConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
     fix: FixConfig = Field(default_factory=FixConfig)
+    fix_history: FixHistoryConfig = Field(default_factory=FixHistoryConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
 
 

@@ -56,6 +56,9 @@ app.add_typer(guidelines_app, name="guidelines")
 skills_app = typer.Typer(help="Manage agent skills (Anthropic Agent Skills spec).")
 app.add_typer(skills_app, name="skills")
 
+fix_app = typer.Typer(help="Inspect and undo past `--fix` sessions.")
+app.add_typer(fix_app, name="fix")
+
 
 # --- Root callback ------------------------------------------------------------
 
@@ -391,6 +394,7 @@ def _run_dedup_with_fix(
             min_confidence=min_confidence,
             allow_dirty=allow_dirty,
             console=_console,
+            config=cfg,
         )
 
         if result.failed and not result.applied:
@@ -675,6 +679,161 @@ def skills_activated():
     _console.print(f"  [bold]{len(activations)} skills would auto-activate:[/]")
     for act in activations:
         _console.print(f"    [bold]{act.skill.name}[/] — matched: {', '.join(act.matched_rules)}")
+
+
+# --- Fix history / undo subcommands ------------------------------------------
+
+
+def _build_history_store(repo_path: Path):
+    from ..agent.fix_history import FixHistoryStore
+
+    cfg = _ensure_config()
+    return FixHistoryStore(
+        repo_root=repo_path,
+        checkpoint_dir=cfg.agent.checkpoint_dir,
+        max_sessions=cfg.fix_history.max_sessions,
+        max_age_days=cfg.fix_history.max_age_days,
+        max_file_bytes=cfg.fix_history.max_file_bytes,
+    )
+
+
+@fix_app.command("history", help="List past `--fix` sessions for the current repo.")
+def fix_history(
+    path: Optional[Path] = typer.Argument(None, help="Repo root (default: cwd)."),
+    limit: int = typer.Option(10, "--limit", "-n", help="How many to show (default 10)."),
+    all_: bool = typer.Option(False, "--all", help="Show every recorded session."),
+):
+    repo_path = (path or Path.cwd()).resolve()
+    store = _build_history_store(repo_path)
+    sessions = store.list_sessions(limit=None if all_ else limit)
+    if not sessions:
+        _console.print("  [dim](no fix history for this repo)[/]")
+        return
+
+    _console.print(f"  [dim]repo:[/] {repo_path}")
+    _console.print(f"  [dim]history:[/] {store.history_root}")
+    _console.print()
+    for s in sessions:
+        title_line = " · ".join(s.patchset_titles) if s.patchset_titles else "(no titles)"
+        if len(title_line) > 80:
+            title_line = title_line[:77] + "…"
+        _console.print(
+            f"  [cyan]{s.session_id}[/]  [dim]{s.started_at_str}[/]  "
+            f"[bold]{s.file_count}[/] files · [bold]{s.applied_ops_count}[/] ops"
+        )
+        _console.print(f"    [dim]{title_line}[/]")
+
+    if not all_ and len(sessions) >= limit:
+        _console.print(f"\n  [dim](showing {limit}; use --all to see everything)[/]")
+
+
+@fix_app.command("show", help="Show what files a session touched.")
+def fix_show(
+    session_id: str = typer.Argument(..., help="Session ID from `revio fix history`."),
+    path: Optional[Path] = typer.Argument(None, help="Repo root (default: cwd)."),
+):
+    repo_path = (path or Path.cwd()).resolve()
+    store = _build_history_store(repo_path)
+    sess = store.get_session(session_id)
+    if sess is None:
+        _err_console.print(f"  ✗ no such session: {session_id}")
+        raise typer.Exit(code=1)
+
+    _console.print(f"  [bold]session:[/]  {sess.session_id}")
+    _console.print(f"  [dim]when:[/]      {sess.started_at_str}")
+    _console.print(f"  [dim]repo:[/]      {sess.repo_root}")
+    _console.print(f"  [dim]ops:[/]       {sess.applied_ops_count}")
+    if sess.patchset_titles:
+        _console.print("  [bold]patches:[/]")
+        for t in sess.patchset_titles:
+            _console.print(f"    · {t}")
+    _console.print(f"  [bold]files ({sess.file_count}):[/]")
+    for s in sess.files:
+        marker = "[yellow](oversized — no snapshot)[/]" if s.oversized else (
+            "[green](created by fix)[/]" if not s.existed else ""
+        )
+        _console.print(f"    · {s.relpath} {marker}")
+
+
+@fix_app.command("undo", help="Restore files to their pre-fix state for one session.")
+def fix_undo(
+    session_id: Optional[str] = typer.Argument(
+        None, help="Session ID (default: most recent)."
+    ),
+    path: Optional[Path] = typer.Argument(None, help="Repo root (default: cwd)."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation."),
+):
+    repo_path = (path or Path.cwd()).resolve()
+    store = _build_history_store(repo_path)
+
+    # Default to the most recent committed session
+    if session_id is None:
+        sessions = store.list_sessions(limit=1)
+        if not sessions:
+            _console.print("  [dim](no fix history to undo)[/]")
+            return
+        session_id = sessions[0].session_id
+
+    sess = store.get_session(session_id)
+    if sess is None:
+        _err_console.print(f"  ✗ no such session: {session_id}")
+        raise typer.Exit(code=1)
+
+    _console.print(
+        f"  [bold]About to undo session:[/]  [cyan]{sess.session_id}[/]  "
+        f"[dim]({sess.started_at_str})[/]"
+    )
+    _console.print(f"  [dim]{sess.file_count} files will be restored from snapshot.[/]")
+    for s in sess.files[:10]:
+        marker = "  [yellow](will skip — oversized)[/]" if s.oversized else (
+            "  [yellow](will delete — created by fix)[/]" if not s.existed else ""
+        )
+        _console.print(f"    · {s.relpath}{marker}")
+    if sess.file_count > 10:
+        _console.print(f"    [dim]... and {sess.file_count - 10} more[/]")
+
+    if not yes:
+        if not questionary.confirm("Proceed?").ask():
+            _console.print("  [dim]cancelled[/]")
+            return
+
+    restored, warnings = store.undo_session(sess.session_id)
+    _console.print(f"\n  [green]✓[/] restored [bold]{restored}[/] file(s)")
+    for w in warnings:
+        _console.print(f"    [yellow]·[/] {w}")
+    _console.print("  [dim]tip: this undo was itself recorded — run "
+                   "`revio fix undo` again to redo.[/]")
+
+
+@fix_app.command("clean", help="Delete fix-history entries (manual or by age).")
+def fix_clean(
+    path: Optional[Path] = typer.Argument(None, help="Repo root (default: cwd)."),
+    older_than_days: Optional[int] = typer.Option(
+        None, "--older-than-days", help="Delete entries older than N days."
+    ),
+    all_: bool = typer.Option(False, "--all", help="Delete every entry (dangerous)."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation."),
+):
+    import shutil as _shutil
+
+    repo_path = (path or Path.cwd()).resolve()
+    store = _build_history_store(repo_path)
+
+    if all_:
+        if not yes and not questionary.confirm(
+            f"Delete ALL fix history at {store.history_root}?"
+        ).ask():
+            _console.print("  [dim]cancelled[/]")
+            return
+        if store.history_root.is_dir():
+            _shutil.rmtree(store.history_root)
+        _console.print("  [green]✓[/] cleared all fix history for this repo")
+        return
+
+    if older_than_days is not None:
+        store.max_age_days = older_than_days
+    store.cleanup()
+    _console.print("  [green]✓[/] cleanup complete (max_sessions + age caps enforced)")
 
 
 # --- MCP server subcommand ----------------------------------------------------
