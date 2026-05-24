@@ -465,7 +465,147 @@ degrades gracefully as the LLM gets weaker, instead of collapsing.
 
 ---
 
-## 10. Highlight #8 — `dedup --fix`: agent *actually* edits files
+## 10. Why LangGraph, not LangChain
+
+This is a decision we made early in the framework discussion. It shapes
+almost every line of `agent/`. Worth a slide.
+
+### Two-sentence summary
+
+LangChain's classic `AgentExecutor` pattern is **in maintenance mode**;
+LangChain's own docs route new agent work to LangGraph. We needed a
+**state-machine agent with explicit nodes, durable cross-session memory,
+structured streaming, and time-travel debug** — that's what LangGraph
+ships natively. Forcing LangChain to do it would've meant fighting the
+abstractions every step.
+
+### Decision matrix
+
+| Dimension | LangChain (AgentExecutor) | LangGraph | What revio needs |
+|---|---|---|---|
+| **Status** | Maintenance mode (community confirms) | Active, primary LangChain-team focus | A framework that won't disappear in 12 months |
+| **Mental model** | "Chain of runnables; agent is one block" | "State machine: nodes + edges + state schema" | Agent IS a state machine; we have plan/react/reflect as distinct nodes |
+| **State** | Implicit, stuffed in the message list | Explicit `TypedDict` with custom reducers | Annotated[list[Finding], operator.add] etc. — required for our reducer logic |
+| **Persistence** | None native; bring your own DB layer | `SqliteSaver` / `PostgresSaver` checkpointers built in | Cross-session memory ("🆕 New since last run") |
+| **Streaming events** | `verbose=True` prints; or LangSmith | `astream_events(version="v2")` typed event stream | We render Plan/tool-start/finding/reflect events to terminal |
+| **Tool-loop primitive** | `AgentExecutor` black box | `create_react_agent` OR custom graph nodes | Custom graph (we needed control over batch processing for OpenAI strict pairing) |
+| **Visualization** | None | `graph.get_graph().draw_mermaid()` | Architecture diagram with one line of code |
+| **Cycles / loops** | Hidden inside AgentExecutor | Explicit edges with conditional routing | We need explicit budget guards on the react loop |
+| **Multi-turn shared memory** | Manual ConversationBufferMemory | State checkpointer at any node | Findings + patches survive across nodes naturally |
+| **Tool-call atomicity** | Limited control over what gets re-emitted | Full control over node-return shape | Required to do per-batch processing for OpenAI strict pairing rule |
+| **Debugging** | Print statements + LangSmith subscription | Time-travel via checkpoint | Replay last session for postmortem |
+| **Learning curve** | "Just chain blocks" — easy start | Slightly steeper (graph mental model) | We paid this once, recovered the cost in week one |
+
+### Concrete revio features that exist ONLY because of LangGraph
+
+```mermaid
+flowchart LR
+    LG["LangGraph<br/>primitives"] --> Reducer["Annotated[list, operator.add]<br/>state reducers"]
+    LG --> AsyncCkpt["AsyncSqliteSaver<br/>checkpointer"]
+    LG --> AstreamEv["astream_events(version='v2')"]
+    LG --> StateGraph["StateGraph + add_node + add_edge"]
+    LG --> Command["Command(update={...})<br/>from-tool state writes"]
+    
+    Reducer --> revFindings["new_findings collected across<br/>tool calls in one react iteration"]
+    Reducer --> revPatches["patches collected for --fix"]
+    Reducer --> revMessages["add_messages reducer for tool dialogue"]
+    
+    AsyncCkpt --> revHist["Cross-session 'New since last run' diff"]
+    AsyncCkpt --> revResume["Resume an interrupted session (M5)"]
+    
+    AstreamEv --> revStream["Terminal: Plan / 🔍 tools / ⚑ findings / 📊 reflection"]
+    
+    StateGraph --> revPRR["plan → react → reflect three distinct nodes<br/>(can't easily do this in AgentExecutor)"]
+    
+    Command --> revPP["propose_patch returns Command(update={'patches': [...]})<br/>auto-merged into state via reducer"]
+    Command --> revRF["report_finding likewise"]
+```
+
+### Code-level concrete examples
+
+**1. State schema with reducers** (`src/revio/agent/state.py`):
+```python
+class AgentState(TypedDict, total=False):
+    messages: Annotated[list, add_messages]           # LangGraph builtin
+    findings: Annotated[list[Finding], operator.add]   # custom reducer
+    patches: Annotated[list[PatchSet], operator.add]   # custom reducer
+    dropped_findings: Annotated[list[dict], operator.add]
+```
+*This is impossible in LangChain — there's no equivalent of typed state with
+per-field reducers. AgentExecutor would force a single ConversationBuffer.*
+
+**2. Three-node graph** (`src/revio/agent/graph.py`):
+```python
+workflow = StateGraph(AgentState)
+workflow.add_node("plan", plan_node)       # LLM emits strategy, no tools
+workflow.add_node("react", react_node)     # tool loop with budget
+workflow.add_node("reflect", reflect_node) # cross-finding synthesis
+workflow.add_edge(START, "plan")
+workflow.add_edge("plan", "react")
+workflow.add_edge("react", "reflect")
+workflow.add_edge("reflect", END)
+return workflow.compile(checkpointer=checkpointer)
+```
+*In AgentExecutor, the entire "agent" is one opaque block. We can't intercept
+the plan phase to sanitize it (we strip fabricated `<tool_call>` markup from
+plan text). We can't run a separate reflect node with a different prompt.*
+
+**3. Streaming events** (`src/revio/agent/runner.py`):
+```python
+async for ev in graph.astream_events(initial, run_config, version="v2"):
+    _dispatch_event(ev, on_event)
+```
+*This gives us per-node + per-tool + per-LLM-chunk events as a typed stream.
+LangChain's stream API only gives final outputs.*
+
+**4. Checkpointing for cross-session findings memory**:
+```python
+async with AsyncSqliteSaver.from_conn_string(db_path) as checkpointer:
+    checkpointer.serde = JsonPlusSerializer(
+        allowed_msgpack_modules=[("revio.output.models", "Finding"), ...]
+    )
+    graph = build_graph(checkpointer=checkpointer)
+```
+*Free durable history; thread_id per (repo, mode, run_uuid). No equivalent
+in LangChain without a third-party DB integration.*
+
+**5. Architecture diagram for free**:
+```python
+print(graph.get_graph().draw_mermaid())
+# → outputs the architecture diagram you see in this file (section 12),
+#   directly from the running graph object.
+```
+
+### What we'd lose if we migrated back
+
+If we tried to rewrite revio on LangChain AgentExecutor today, we'd lose:
+
+- Cross-session "🆕 New since last run" memory (no checkpointer)
+- Plan / react / reflect node separation (AgentExecutor is opaque)
+- Plan-text sanitization for hallucinated tool markup (no plan node access)
+- Per-finding mid-session streaming (no astream_events equivalent)
+- Patch + finding state separation (no custom reducers)
+- Easy migration to multi-agent (M5 we'd add subgraphs for dedup pair-checking)
+- Architecture diagram generation
+- Tool-call batch atomicity (no fine-grained node control)
+
+That's ~40% of revio's user-facing features. Not worth it.
+
+### The honest counter-argument
+
+LangChain wins on **ecosystem breadth** — more integrations, more
+community recipes, more StackOverflow answers. For a non-state-machine
+LLM app (e.g., a simple Q&A chatbot), LangChain is the right choice.
+
+revio is a state machine. LangGraph wins on technical fit, not popularity.
+
+### Bottom line for the slide
+
+> **Picked LangGraph because revio's design IS a state machine** (plan → react → reflect with budget control and shared memory), and LangGraph treats state machines as first-class. LangChain's AgentExecutor would have made us re-invent persistence, multi-node graphs, structured streaming, and reducer-based state — all things we get for free in LangGraph.
+
+---
+
+## 11. Highlight #8 — `dedup --fix`: agent *actually* edits files
 
 Most "agentic" tools propose changes as text. revio's `dedup --fix` writes
 to disk through a 6-layer safety net:
