@@ -604,6 +604,130 @@ agent/patch.py:PatchApplier(repo_root)
 
 ---
 
+## 9b. Fix history: snapshot-based multi-step undo
+
+**Symptom**: `revio fix undo` doesn't restore correctly, history grows
+unbounded, oversized files cause apparent corruption
+
+**Storage layout**:
+```
+~/.cache/revio/<repo_hash>_fix_history/
+  2026-05-24T10-15-32.847291_a3f9/    ← session ID, sortable as string = chronological
+    manifest.json                       ← {session_id, started_at, repo_root,
+                                           patchset_titles, files: [{relpath, existed, oversized}]}
+    applied.json                        ← {patches: [PatchSet.model_dump_json(...)]}
+    snapshots/
+      src/utils.js                      ← pre-apply file content (verbatim copy)
+      src/page.js
+  2026-05-24T11-02-08.123456_7c1d/
+    ...
+```
+
+**File trace — recording**:
+```
+cli/fix.py:run_fix_flow(patches, repo_root, config=...)
+   ↓
+   if not dry_run and config is not None:
+      history_store = FixHistoryStore(
+         repo_root, config.agent.checkpoint_dir,
+         max_sessions=50, max_age_days=30, max_file_bytes=1_048_576,
+      )
+   ↓
+   applier = PatchApplier(repo_root, history_store=history_store)
+   ↓
+   applier.begin_session(allow_dirty=...)
+      → history_store.begin_session()
+         session_id = ISO timestamp with µs + 4-char random suffix
+         self._snapshots = {}
+         self._applied = []
+         mkdir <history_root>/<session_id>/snapshots/
+         cleanup()                       ← age + count purge (see below)
+      → git stash (if in git AND dirty AND allow_dirty)
+   ↓
+   for patch in patches:
+      applier.apply(patch)
+         → history_store.snapshot_files(patch)
+            For each path in patch.affected_files:
+               If not yet snapshotted in this session:
+                  Stat the file
+                  If size > max_file_bytes: record FileSnapshot(oversized=True)
+                  Elif file doesn't exist: record FileSnapshot(existed=False)
+                  Else: shutil.copy2 into snapshots/<relpath>
+         → write the new content to disk
+         → history_store.add_applied(patch)
+   ↓
+   applier.end_session()
+      → history_store.finalize()
+         If no patches applied: rmtree session dir (no empty entries)
+         Else: write manifest.json + applied.json
+```
+
+**File trace — undoing**:
+```
+cli/main.py:fix_undo(session_id, ...)
+   ↓
+   store = FixHistoryStore(...)
+   ↓
+   If session_id is None:
+      session_id = store.list_sessions(limit=1)[0].session_id     ← most recent
+   ↓
+   store.undo_session(session_id):
+      sess = self.get_session(session_id)                          ← read manifest
+      ↓
+      # Step 1: snapshot CURRENT state as a new session so undo can be undone
+      undo_session_id = self.begin_session()
+      For each path in sess.files:
+         self._snapshot_one(path)
+      ↓
+      # Step 2: restore each file from the OLD session's snapshots
+      For snap in sess.files:
+         If snap.oversized: warnings.append("skipped <path>"); continue
+         If not snap.existed: target.unlink() (file was created by fix → delete it)
+         Else: shutil.copy2(<old_session>/snapshots/<relpath>, target)
+      ↓
+      # Step 3: finalize the undo session with a synthetic PatchSet so it shows
+      # up in `revio fix history`
+      self._applied.append(PatchSet(title=f"undo of {session_id}", ops=[]))
+      self.finalize()
+```
+
+**Auto-rotation (cleanup)**:
+```
+FixHistoryStore.cleanup() runs on every begin_session():
+   1) Age purge: shutil.rmtree any dir older than max_age_days
+   2) Count purge: keep newest max_sessions COMMITTED (manifest.json present);
+      treat in-flight uncommitted sessions as "about to add one" so the final
+      committed count lands at ≤ max_sessions exactly
+```
+
+Key invariant: **session ID format must remain string-sortable
+chronologically**. The microsecond precision in the timestamp is what
+makes `list_sessions(sort by name reverse)` correct. If you ever change
+`_make_session_id`, keep this property.
+
+**Common failures**:
+- **`undo_session` restores stale content**: snapshot was taken AFTER a
+  prior fix in the same `--fix` session. The store dedupes per file —
+  the FIRST snapshot wins (= true pre-session content). If you see
+  multi-patch sessions undoing to mid-state, check `snapshot_files`
+  for the `if relpath in self._snapshots: continue` line.
+- **"no such session"**: session ID typo, or session was rotated out.
+  `revio fix history --all` shows everything still on disk.
+- **Undo skipped a file with "oversized" warning**: file was >
+  `max_file_bytes` at fix time. Bump the cap in
+  `config.toml [fix_history]` or accept the loss (these are typically
+  generated bundles).
+- **`revio fix history` shows undos as separate entries**: by design —
+  every undo is itself a session, so `undo` then `undo` again redoes.
+- **Disk usage grew unexpectedly**: check `max_sessions` and
+  `max_age_days` in `cfg.fix_history`. Defaults are 50 / 30 days.
+- **Mid-session crash**: applied patches that completed got snapshotted
+  (and recorded), but `finalize` may not have written the manifest.
+  Stranded session dirs without manifest.json are ignored by
+  `list_sessions` and cleaned up by `cleanup()` when count is exceeded.
+
+---
+
 ## 10. Cross-session memory: findings history
 
 **Symptom**: "🆕 New since last run" wrong / missing
@@ -921,6 +1045,7 @@ pyproject.toml: [project.scripts]
 | `tests/test_languages_smoke.py` | Tree-sitter for Py/Rust/Java/Go; cppcheck + golangci-lint + LLM-only profile registration | Deterministic |
 | `tests/test_plc_smoke.py` | PLC parser core, 23 rule violations on fixture, PLC-006 regex bug fix verification | Deterministic |
 | `tests/test_patch_smoke.py` | PatchApplier: serialization, can_apply pre-flight, apply, git safety, preview, propose_patch tool | Deterministic |
+| `tests/test_fix_history_smoke.py` | Fix-history: apply→undo (no git), undo-of-undo=redo, target old session, oversized files skipped, auto-rotation at cap | Deterministic |
 
 Each test should run in **under 10 seconds** (no real API calls; PLC tests
 needs Python imports only; MCP test launches a stub subprocess).

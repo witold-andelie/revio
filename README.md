@@ -28,7 +28,7 @@ $ revio review --commit HEAD
 | **RAG** | Index your company's coding guidelines, cited inline in findings |
 | **Skills** | Anthropic Agent Skills spec, dual-layer (project + user) |
 | **MCP** | Client + server — connects to your tools, exposes its own |
-| **`dedup --fix`** | Actually applies patches (delete dups, update imports) — with git safety |
+| **`dedup --fix` + undo** | Applies patches AND records snapshot history — `revio fix undo` reverts any past session |
 | **Cross-session memory** | "🆕 New since last run: 3" — SQLite-backed |
 | **Multi-LLM** | Anthropic + OpenAI-compat (DeepSeek / Mimo / OpenRouter / Ollama / ...) |
 | **Multilingual REPL** | Any human language (en / 中 / de / es / 日 ...) → English findings |
@@ -100,6 +100,21 @@ revio dedup --fix --yes                # auto-apply high-confidence (CI)
 Detects duplicate functions, single-use wrappers, dead code, repeated
 templates — the LLM-generated patterns. `--fix` refuses to start on a
 dirty repo unless `--allow-dirty` (which stashes first).
+
+**Undo any past fix** — every `--fix` session snapshots the affected
+files before writing, so you can roll back regardless of git state:
+
+```bash
+revio fix history                       # list past sessions
+revio fix undo                          # restore from most recent session
+revio fix undo 2026-05-24T10-15-32.123_a3f9  # restore a specific one
+revio fix show <session_id>             # preview what would be reverted
+revio fix clean --older-than-days 14    # purge old snapshots
+```
+
+History caps default to 50 sessions / 30 days / 1 MiB per file — tweak
+in `~/.config/revio/config.toml` under `[fix_history]`. Works without
+git; the git stash path remains as additional safety when present.
 
 ---
 
@@ -308,7 +323,8 @@ on exit `2`.
 | PLC / industrial control | Not supported | 7 vendor parsers + 30 PLCopen + HW audit |
 | LLM provider | Vendor-locked | Anthropic + any OpenAI-compat |
 | Cross-session memory | Stateless | SQLite history — "🆕 New since last run" |
-| Auto-fix | Text suggestion only | `--fix` actually edits files (git-safe) |
+| Auto-fix | Text suggestion only | `--fix` actually edits files |
+| Undo a fix | "Hope you committed before running" | `revio fix undo` — snapshot-based, multi-step, no git required |
 
 ---
 

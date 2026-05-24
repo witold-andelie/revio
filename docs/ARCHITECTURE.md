@@ -650,6 +650,46 @@ $ git diff
 > Implementation: `src/revio/agent/patch.py` (models + applier) +
 > `src/revio/cli/fix.py` (interactive flow).
 
+### Snapshot-based multi-step undo
+
+The git-stash branch above is **secondary safety**. The primary undo
+path is a per-session file-snapshot store that works regardless of git:
+
+```mermaid
+flowchart LR
+    Apply["PatchApplier.apply(patchset)"] --> Snap["FixHistoryStore.snapshot_files<br/>(copies affected files to<br/>~/.cache/revio/&lt;hash&gt;_fix_history/<br/>&lt;session_id&gt;/snapshots/)"]
+    Snap --> Write[Write the patch ops to disk]
+    Write --> Manifest["End of session:<br/>manifest.json + applied.json"]
+
+    User["User later: `revio fix undo`"] --> Read[Read manifest<br/>find session by ID or default = newest]
+    Read --> Restore["Copy snapshots back over current files<br/>(create-by-fix files get deleted)"]
+    Restore --> NewSess["Record the undo itself as a new session<br/>→ undo of undo = redo"]
+```
+
+Key design choices:
+
+| Choice | Why |
+|---|---|
+| Store **full file contents**, not reverse patches | Survives any subsequent edit; no merge conflict on undo |
+| **Works without git** | The original stash-only design left non-git users with zero safety |
+| Session ID = ISO timestamp with µs precision + 4-char suffix | String sort = chronological, even for sessions in same second |
+| **Multi-step**: `revio fix undo <session_id>` targets any past session, not just the most recent | Real workflows need "undo the 3rd one, not the last" |
+| **Undo is itself a session** | Undo-of-undo = redo for free |
+| Caps: 50 sessions / 30 days / 1 MiB per file | Bounded disk; long enough for real use; aligned with git reflog defaults |
+| Auto-cleanup runs at every `begin_session` | User never has to think about disk |
+| Oversized files flagged in manifest, undo warns + skips | Avoids storing 100 MB generated bundles |
+
+Real disk footprint: typical dedup session ≈ 30 KB on disk; 50 sessions ≈
+2.5 MB. Trivial.
+
+Slide bullet: **"Undo is multi-step and git-agnostic"** — competitors
+expect you to commit before running, then `git reset --hard` if something
+breaks. revio always has a snapshot ready.
+
+> Implementation: `src/revio/agent/fix_history.py` (~340 LOC) +
+> CLI subcommands in `src/revio/cli/main.py` (`revio fix
+> history/show/undo/clean`).
+
 ---
 
 ## 10. Target customer: Universities (especially EE + CS departments)
@@ -895,7 +935,7 @@ competitor at the time of writing.
 - **"Your rules, agent's eyes"** — RAG over `.md/.pdf/.docx` company guidelines; agent cites § X.Y.Z directly in findings
 - **"Industrial-grade PLC coverage"** — 7 vendor parsers, 30 PLCopen + Secure-PLC rules; nobody else does this
 - **"Pluggable LLM"** — Anthropic native + any OpenAI-compatible (DeepSeek $0.013 per audit / local Ollama / etc.)
-- **"Actually applies fixes"** — `dedup --fix` writes to filesystem with git-stash safety
+- **"Actually applies fixes + multi-step undo"** — `dedup --fix` writes to filesystem; `revio fix undo` rolls back any past session (snapshot-based, no git required)
 - **"University-ready"** — covers EE (PLC/Verilog/MATLAB/embedded C) + CS (mainstream langs); cites course syllabi via RAG
 
 ---
