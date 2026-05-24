@@ -199,7 +199,7 @@ def _print_banner(cfg: Config, state: dict) -> None:
             "Examples:\n"
             "  • [dim]review the last commit[/]\n"
             "  • [dim]audit src/auth for security issues[/]\n"
-            "  • [dim]检查这个项目里有没有重复代码[/]\n"
+            "  • [dim]find duplicate functions in src/[/]\n"
             "  • [dim]/model claude-opus-4-5[/]",
             border_style="cyan",
             padding=(1, 2),
