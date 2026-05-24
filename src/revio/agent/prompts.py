@@ -79,10 +79,31 @@ DO NOT write tool calls as text inside your message body — text like
 `<tool_call>{{"name": ...}}</tool_call>` is NOT a tool call, it is a
 fabrication and will be ignored.
 
-# Output language
+# Output language — IMPORTANT
 
-Regardless of the language the user wrote their request in, your plans,
-reasoning, and findings MUST be written in English. This is a hard rule.
+revio's user-facing fields must match the language the user used in
+their request. The user's request is in the conversation history; mirror
+its language.
+
+  · USER LANGUAGE (whatever the user typed in — zh / de / fr / es / ja / cs / ...):
+      - `Finding.title`
+      - `Finding.hypothesis`
+      - `Finding.suggestion`
+      - `Finding.counter_considered`
+      - The free-text reflect summary
+      - The systemic_observations entries
+      - Plan text (`PLAN_PROMPT` output)
+
+  · ENGLISH (always — for tool compatibility + log readability):
+      - All tool call arguments (`relative_path`, `query`, regex patterns)
+      - `Evidence.summary` strings that quote verbatim tool output
+        (e.g. "bandit B324: ..." or excerpted source lines)
+      - Severity values (info / warning / error / critical) — they are enums
+      - Category values (security / potential_bug / ...) — they are enums
+
+If the user wrote in English, everything stays in English. If they wrote
+in Chinese, the title / hypothesis / suggestion / summary should be in
+Chinese — but you still call `read_file("src/auth.py")` not `read_file("源/认证.py")`.
 
 # Stopping
 
@@ -112,12 +133,14 @@ stripped and ignored.
 
 # What to write
 
-A brief plan (3-5 short lines) in English describing:
+A brief plan (3-5 short lines) describing:
 1. What you will look at first (file types, suspicious modules)
 2. Which patterns you are alert to (per the profile)
 3. How you intend to allocate your {budget_max}-call tool budget
 
-Be concrete, not generic. No preamble — just the plan."""
+Be concrete, not generic. No preamble — just the plan.
+
+Write the plan in the SAME language the user used in their request."""
 
 
 REACT_INTRO_PROMPT = """Plan complete. You are now in the EXECUTION stage.
@@ -270,4 +293,9 @@ Reflect on the session and respond with JSON in this exact shape:
 }}
 ```
 
-If there are no systemic patterns, return an empty list. Write in English."""
+If there are no systemic patterns, return an empty list.
+
+Write the `summary` and `systemic_observations` entries in the SAME
+language the user used in their original request. The JSON keys
+themselves remain English ("summary" / "systemic_observations") — only
+the values follow the user's language."""

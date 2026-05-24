@@ -490,6 +490,14 @@ def _handle_nl_input(line: str, cfg: Config, state: dict) -> None:
             import traceback
 
             traceback.print_exc()
+    finally:
+        # Visual separator + owl mascot so the next prompt feels like
+        # a fresh task, not a continuation. Skipped on non-TTY (CI).
+        from .mascot import play_startup_animation
+
+        _console.print()
+        play_startup_animation(_console)
+        _console.print()
 
 
 def _classify_intent(user_input: str, cfg: Config) -> dict | None:
