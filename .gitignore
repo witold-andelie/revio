@@ -25,3 +25,10 @@ htmlcov/
 .cache/
 # User config (machine-specific)
 .revio.local.toml
+# CodeGraph local index (per-machine, regenerable via `codegraph index`)
+.codegraph/
+audit-results/
+.claude/
+docs/ARCHITECTURE.md
+docs/INTERNALS.md
+marketing/

@@ -15,6 +15,8 @@ import asyncio
 import json
 import os
 import re
+import shlex
+import subprocess
 import sys
 from pathlib import Path
 from typing import Callable, Optional
@@ -61,27 +63,51 @@ SLASH_COMMANDS = {
 # --- Multilingual intent classifier prompt -----------------------------------
 
 
-_INTENT_SYSTEM = """You are an intent classifier for the revio code-review CLI.
+_INTENT_SYSTEM = """You are the intent router for the revio code-review CLI.
 
-The user typed a free-form request. Classify it into one of:
+The user typed a free-form request. revio can do a fixed set of things — pick
+the ONE intent that matches, or flag the request as out of scope.
 
-- review : the user wants to review a diff or specific commit
-- audit  : the user wants a full-repo security audit (no diff context)
-- dedup  : the user wants to find AI-generated redundancy / duplicate code
-- chat   : the user is asking a meta-question (not a review task)
+- review       : review a diff or a specific commit
+- audit        : full-repo security / quality audit (no diff context)
+- dedup        : find AND clean AI-generated / "vibe-coding" redundancy —
+                 duplicate functions, dead code, no-op wrappers, junk code
+                 (e.g. "clean up the junk code", "去掉重复/废物代码", "删掉死代码")
+- config       : change or show a revio SETTING — the LLM model, the API
+                 endpoint URL, the API key, the language profile, the default
+                 mode, or the tool-call budget; or show the config / session cost
+- capability   : the user is asking what revio can do / for help
+- out_of_scope : the request is OUTSIDE revio's abilities. revio ONLY reviews
+                 code and manages its own settings. It does NOT write new
+                 features, edit business logic, run arbitrary shell commands,
+                 deploy, browse the web, or answer general/unrelated questions.
 
-The user may type in ANY human language: English, Chinese (中文),
-German (Deutsch), French (français), Spanish (español), Czech (česky),
-Japanese (日本語), or any other. Classify the intent regardless of language.
+The user may type in ANY human language (en / 中文 / Deutsch / français /
+español / 日本語 / …). Classify regardless of language.
 
-Also extract optional structured fields:
+For `config`, ALSO emit a `slash` field — the exact revio slash command that
+performs the change, chosen ONLY from this whitelist (never invent others):
+  /model <name>         set the model
+  /model list           show available models
+  /url <https-url>      set the API endpoint URL
+  /key                  update the API key  (SECURITY: never put the key value
+                        in `slash`; the CLI prompts for it securely. Always emit
+                        exactly "/key".)
+  /profile <auto|js|plc|python>
+  /mode <review|audit|dedup>
+  /budget <1-200>
+  /cost                 show session cost
+  /config               show / open the config file
+
+For review / audit / dedup also extract:
 - target_path : relative or absolute filesystem path mentioned (string or null)
 - target_ref  : a git commit, branch, or "HEAD" if mentioned (string or null)
 - focus_area  : security / performance / readability / etc. (string or null)
 
 Respond with strict JSON in this shape:
 {
-  "intent": "review" | "audit" | "dedup" | "chat",
+  "intent": "review" | "audit" | "dedup" | "config" | "capability" | "out_of_scope",
+  "slash": null,
   "target_path": null,
   "target_ref": null,
   "focus_area": null,
@@ -199,8 +225,9 @@ def _print_banner(cfg: Config, state: dict) -> None:
             "Examples:\n"
             "  • [dim]review the last commit[/]\n"
             "  • [dim]audit src/auth for security issues[/]\n"
-            "  • [dim]find duplicate functions in src/[/]\n"
-            "  • [dim]/model claude-opus-4-5[/]",
+            "  • [dim]clean up the duplicate / junk code[/]\n"
+            "  • [dim]switch the model to claude-opus-4-7[/]\n"
+            "  • [dim]set my api key[/]   ·   [dim]what can you do?[/]",
             border_style="cyan",
             padding=(1, 2),
         )
@@ -247,7 +274,9 @@ def _cmd_help(arg: str, cfg: Config, state: dict) -> bool:
         _console.print(f"  [cyan]{cmd:<10}[/] {desc}")
     _console.print(
         "\nAnything not starting with [cyan]/[/] is treated as a natural-language\n"
-        "request and classified into review / audit / dedup. Multilingual OK.\n"
+        "request: review / audit / dedup, OR a settings change (\"switch the\n"
+        "model to ...\", \"set my api key\", \"budget 30\"). Ask \"what can you do?\"\n"
+        "for the full list. Out-of-scope requests are flagged. Multilingual OK.\n"
     )
     return True
 
@@ -398,7 +427,13 @@ def _cmd_cost(arg: str, cfg: Config, state: dict) -> bool:
 def _cmd_config_edit(arg: str, cfg: Config, state: dict) -> bool:
     path = user_config_path()
     editor = os.environ.get("EDITOR", "nano")
-    os.system(f'{editor} "{path}"')
+    # Launch the editor WITHOUT a shell so a hostile $EDITOR can't inject
+    # commands. shlex.split preserves multi-word editors like "code --wait".
+    try:
+        subprocess.run([*shlex.split(editor, posix=(os.name != "nt")), str(path)])
+    except FileNotFoundError:
+        _console.print(f"  [red]✗[/] editor not found: {editor!r} (check $EDITOR)")
+        return True
     # Reload after edit
     cfg2 = load_config(state["cwd"])
     cfg.__dict__.update(cfg2.__dict__)
@@ -433,19 +468,124 @@ def _cmd_exit(arg: str, cfg: Config, state: dict) -> bool:
 # --- Natural language handler -------------------------------------------------
 
 
+# The full set of intents the router understands.
+_VALID_INTENTS = {"review", "audit", "dedup", "config", "capability", "out_of_scope", "chat"}
+
+# What revio can actually do — the single source of truth for the capability
+# summary AND the out-of-scope reminder. (English-only, per the project's
+# English-only-UI convention; see docs/INTERNALS.md §13f.)
+CAPABILITIES = [
+    ("Review a diff or commit",
+     "review the last commit · 看看这次改动"),
+    ("Audit the whole repo for security & quality issues",
+     "audit src/ for vulnerabilities · 扫描漏洞"),
+    ("Find & clean AI-generated / vibe-coding redundancy (dupes, dead code)",
+     "clean up the junk/duplicate code · 去掉重复的废代码"),
+    ("Change a setting: model, API endpoint, API key, profile, mode, budget",
+     "switch to claude-opus-4-7 · set my api key · budget 30"),
+    ("Show the current config or this session's cost",
+     "show my config · how much did this cost"),
+]
+
+# NL config requests are only ever mapped to one of these slash commands. The
+# router (LLM or keyword fallback) proposes a slash string; we refuse anything
+# outside this set so a misclassification can never run an arbitrary command.
+_ALLOWED_SLASH_FROM_NL = {
+    "/model", "/url", "/key", "/profile", "/mode", "/budget", "/cost", "/config",
+}
+
+
+def _print_capabilities(reason: str = "") -> None:
+    """Show what revio can do (for `capability` / help-style requests)."""
+    _console.print()
+    _console.print("  [bold]Here's what I can do for you in plain language:[/]")
+    for what, example in CAPABILITIES:
+        _console.print(f"    [cyan]•[/] {what}")
+        _console.print(f"        [dim]e.g. {example}[/]")
+    _console.print(
+        "\n  Slash commands ([cyan]/help[/]) do the same things as shortcuts."
+    )
+    _console.print()
+
+
+def _print_out_of_scope(rationale: str = "") -> None:
+    """Tell the user their request is beyond revio's capability boundary."""
+    _console.print()
+    _console.print(
+        "  [yellow]⚠ That request is outside what revio can do.[/]"
+    )
+    if rationale:
+        _console.print(f"  [dim]{rationale}[/]")
+    _console.print(
+        "  revio is a code-review agent — it reviews/audits code, cleans\n"
+        "  AI-generated redundancy, and manages its own settings. It does not\n"
+        "  write features, run arbitrary commands, deploy, or answer general\n"
+        "  questions."
+    )
+    _print_capabilities()
+
+
+def _handle_config_intent(classification: dict, cfg: Config, state: dict) -> None:
+    """Apply an NL-driven settings change by reusing the slash dispatcher.
+
+    The classifier proposes a slash command; we validate it against the
+    whitelist, force the API-key path to be interactive (never accept a secret
+    from free text), confirm endpoint changes, then hand off to _handle_slash.
+    """
+    slash = (classification.get("slash") or "").strip()
+    if not slash.startswith("/"):
+        _console.print(
+            "  [yellow]I understood you want to change a setting, but couldn't\n"
+            "  map it to a command. Try [bold]/help[/] for the exact options.[/]"
+        )
+        return
+
+    cmd = slash.split(maxsplit=1)[0].lower()
+    if cmd not in _ALLOWED_SLASH_FROM_NL:
+        _console.print(
+            f"  [yellow]'{cmd}' isn't a setting revio can change from natural\n"
+            f"  language. Try [bold]/help[/].[/]"
+        )
+        return
+
+    # SECURITY: never take an API key from free-text input — drop any value the
+    # classifier may have attached and force the masked interactive prompt.
+    if cmd == "/key":
+        slash = "/key"
+    elif cmd == "/url" and " " in slash:
+        new_url = slash.split(maxsplit=1)[1].strip()
+        if not questionary.confirm(
+            f"Change the API endpoint to {new_url}?", default=False
+        ).ask():
+            _console.print("  [dim]cancelled[/]")
+            return
+
+    _console.print(f"  [dim]· interpreting that as[/] [cyan]{slash}[/]")
+    _handle_slash(slash, cfg, state)
+
+
 def _handle_nl_input(line: str, cfg: Config, state: dict) -> None:
-    """Classify intent → run agent in chosen mode."""
+    """Classify intent → run agent, change a setting, or explain the boundary."""
     classification = _classify_intent(line, cfg)
     if classification is None:
         _console.print("  [yellow]Could not classify request. Try a slash command or /help.[/]")
         return
 
     intent = classification.get("intent", "review")
-    if intent == "chat":
-        _console.print(
-            f"  [dim]revio is task-focused; for general chat use claude directly.\n"
-            f"  rationale: {classification.get('rationale', '')}[/]"
-        )
+
+    if intent == "config":
+        _handle_config_intent(classification, cfg, state)
+        return
+    if intent in ("capability", "chat"):
+        _print_capabilities(classification.get("rationale", ""))
+        return
+    if intent == "out_of_scope":
+        _print_out_of_scope(classification.get("rationale", ""))
+        return
+    if intent not in ("review", "audit", "dedup"):
+        # Unknown / unexpected label — fail safe by explaining the boundary
+        # rather than silently launching an agent run.
+        _print_out_of_scope(classification.get("rationale", ""))
         return
 
     # Resolve target path
@@ -530,7 +670,7 @@ def _classify_intent(user_input: str, cfg: Config) -> dict | None:
 
     # --- Parse JSON (lenient: strip markdown fences, find longest brace block) ---
     parsed = _try_parse_json(llm_text)
-    if parsed and isinstance(parsed, dict) and parsed.get("intent") in {"review", "audit", "dedup", "chat"}:
+    if parsed and isinstance(parsed, dict) and parsed.get("intent") in _VALID_INTENTS:
         return parsed
 
     # LLM returned prose / wrong shape — show it once for debugging, then fall back
@@ -600,16 +740,101 @@ _PATH_RE = re.compile(
 _GIT_REF_RE = re.compile(r"\b(HEAD(?:~\d+|\^+)?|[a-f0-9]{7,40})\b")
 
 
+# Action verbs that signal "change a setting" (so a bare noun like "model"
+# inside a review request doesn't get mis-routed to config). Multilingual.
+_CONFIG_VERBS = (
+    "set", "change", "switch", "update", "use", "configure", "make it",
+    "show", "open",
+    "改", "换", "设置", "设成", "调", "切换", "更新", "配置成", "用",
+    "显示", "查看", "打开",
+)
+
+
+def _keyword_config_slash(text: str) -> str | None:
+    """Map a config-ish NL request to a whitelisted slash command (or None).
+
+    LLM is the primary router; this is the offline fallback. It is deliberately
+    conservative — bare-noun cases (model / profile / mode / config) require an
+    explicit action verb so review requests aren't swallowed.
+    """
+    low = text.lower()
+    has_verb = any(v in low for v in _CONFIG_VERBS)
+
+    # API key — strong signal, no verb needed. Never carries the value.
+    if any(k in low for k in ("api key", "apikey", "api-key", "密钥", "钥匙")):
+        return "/key"
+
+    # Endpoint / URL — a literal URL or "endpoint" wording.
+    if any(k in low for k in ("endpoint", "api url", "base url", "接口", "端点")) or (
+        "url" in low and has_verb
+    ):
+        m = re.search(r"https?://[^\s'\"]+", text)
+        return f"/url {m.group(0)}" if m else "/url"
+
+    # Budget — "budget"/"预算" plus a number.
+    if any(k in low for k in ("budget", "预算", "额度")):
+        m = re.search(r"\b(\d{1,3})\b", text)
+        return f"/budget {m.group(1)}" if m else "/budget"
+
+    # Session cost.
+    if any(k in low for k in ("cost", "成本", "花费", "费用", "花了多少", "多少钱")):
+        return "/cost"
+
+    # Model — a model-id-looking token, or an explicit list request.
+    # (Checked BEFORE "mode" because the word "model" contains "mode".)
+    if any(k in low for k in ("model", "模型")):
+        if any(k in low for k in ("list", "available", "有哪些", "列出", "支持哪些")):
+            return "/model list"
+        if has_verb:
+            m = re.search(r"\b([a-z][a-z0-9.]*-[a-z0-9.\-]+)\b", low)
+            if m:
+                return f"/model {m.group(1)}"
+            return "/model"
+
+    # Mode (word-boundary so the word "model" can't trigger it).
+    if (re.search(r"\bmode\b", low) or "模式" in low) and has_verb:
+        for mo in ("review", "audit", "dedup"):
+            if mo in low:
+                return f"/mode {mo}"
+        return "/mode"
+
+    # Profile.
+    if any(k in low for k in ("profile", "配置文件")) and has_verb:
+        for pr in ("auto", "js", "plc", "python"):
+            if pr in low:
+                return f"/profile {pr}"
+        return "/profile"
+
+    # Show/open the config file.
+    if any(k in low for k in ("config", "settings", "配置", "设置")) and has_verb:
+        return "/config"
+
+    return None
+
+
 def _keyword_classify(user_input: str) -> dict:
     """Best-effort classification when the LLM path fails.
 
-    Always returns a usable dict — never None. Worst case: intent='chat'
-    so the user can re-phrase. Path extraction is regex-based and works
-    on Windows / UNC / Unix / relative paths and quoted strings.
+    Always returns a usable dict — never None. Path extraction is regex-based
+    and works on Windows / UNC / Unix / relative paths and quoted strings.
     """
-    lower = user_input.lower()
+    base = {
+        "intent": "capability",
+        "slash": None,
+        "target_path": None,
+        "target_ref": None,
+        "focus_area": None,
+        "rationale": "keyword fallback (LLM classifier unavailable or invalid)",
+    }
 
-    intent = "chat"
+    # Settings change first — most specific.
+    slash = _keyword_config_slash(user_input)
+    if slash:
+        return {**base, "intent": "config", "slash": slash,
+                "rationale": "keyword fallback (settings change)"}
+
+    lower = user_input.lower()
+    intent = None
     for kind, keywords in _KEYWORD_RULES:
         if any(k in lower for k in keywords):
             intent = kind
@@ -625,18 +850,14 @@ def _keyword_classify(user_input: str) -> dict:
         if target_path:
             break
 
-    # If a path was found but intent is still 'chat', bump to 'review'
-    # (the most common "look at this file" pattern)
-    if target_path and intent == "chat":
-        intent = "review"
+    if intent is None:
+        # A path with no review verb is most likely "look at this file";
+        # otherwise we can't tell offline — show capabilities rather than
+        # guessing or claiming it's out of scope.
+        intent = "review" if target_path else "capability"
 
     target_ref_m = _GIT_REF_RE.search(user_input)
     target_ref = target_ref_m.group(1) if target_ref_m else None
 
-    return {
-        "intent": intent,
-        "target_path": target_path,
-        "target_ref": target_ref,
-        "focus_area": None,
-        "rationale": "keyword fallback (LLM classifier unavailable or invalid)",
-    }
+    return {**base, "intent": intent, "target_path": target_path,
+            "target_ref": target_ref}

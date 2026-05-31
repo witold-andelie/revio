@@ -33,6 +33,7 @@ $ revio review --commit HEAD
 | **Cross-session memory** | "🆕 New since last run: 3" — SQLite-backed |
 | **Multi-LLM** | Anthropic · DeepSeek · **Mistral** (EU-sovereign) · OpenAI · OpenRouter · any OpenAI-compatible endpoint |
 | **Multilingual REPL** | Any human language (en / 中 / de / es / 日 ...) → English findings |
+| **Natural-language control** | Plain-language commands run reviews *and* change settings (model / endpoint / key / budget …); out-of-scope asks are flagged at the capability boundary |
 
 ---
 
@@ -448,6 +449,10 @@ revio              # drop into REPL
 > review the last 3 commits
 > 检查这个项目里有没有重复代码         ← reply comes back in Chinese
 > Vérifie src/auth.py pour des fuites  ← reply comes back in French
+> clean up the duplicate / junk code   ← runs dedup
+> switch the model to claude-opus-4-7  ← changes a setting, no slash needed
+> set my api key                       ← prompts securely (key never typed inline)
+> what can you do?                     ← lists revio's capabilities
 > /model deepseek-v4-pro
 ```
 
@@ -464,8 +469,25 @@ revio              # drop into REPL
 | `/cost` | Real token usage + USD cost for the REPL session |
 | `/clear` `/history` `/exit` | Standard |
 
-Non-slash input is classified by an intent LLM into `review` / `audit` /
-`dedup` / `chat`. Multilingual by design.
+Non-slash input is routed by an intent LLM (multilingual by design) into:
+
+- **`review` / `audit` / `dedup`** — run the agent in that mode. "Clean up
+  the junk / duplicate code" maps to `dedup`.
+- **`config`** — change a setting in plain language ("switch the model to
+  claude-opus-4-7", "set my api key", "budget 30", "use the endpoint
+  https://api.mistral.ai/v1", "show my config", "how much did this cost").
+  These are translated to the matching slash command and run through the same
+  dispatcher, so anything the slash commands do is reachable by natural
+  language too. **The API key is never read from the text you type** — that
+  path always drops into the masked prompt; endpoint changes ask to confirm.
+- **`capability`** — "what can you do?" prints the capability list.
+- **`out_of_scope`** — requests beyond revio (write a feature, deploy, run a
+  shell command, general questions) are **declined with a clear note that
+  they're outside revio's capability boundary**, plus a reminder of what it
+  *can* do — instead of silently launching a review.
+
+There's a deterministic keyword fallback for when the intent LLM is
+unreachable, so settings changes and the boundary message still work offline.
 
 ### Language: input vs output
 

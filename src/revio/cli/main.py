@@ -462,7 +462,16 @@ def config_edit():
         _err_console.print(f"  ✗ Config does not exist yet. Run [bold]revio config init[/] first.")
         raise typer.Exit(code=1)
     editor = os.environ.get("EDITOR", "nano")
-    os.system(f'{editor} "{path}"')
+    # No shell — a hostile $EDITOR must not be able to inject commands.
+    # shlex.split keeps multi-word editors like "code --wait" working.
+    import shlex
+    import subprocess
+
+    try:
+        subprocess.run([*shlex.split(editor, posix=(os.name != "nt")), str(path)])
+    except FileNotFoundError:
+        _err_console.print(f"  ✗ editor not found: {editor!r} (check $EDITOR)")
+        raise typer.Exit(code=1)
 
 
 # --- guidelines subcommands ---------------------------------------------------
