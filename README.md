@@ -534,7 +534,7 @@ it — they're configuration, not "tasks".
 | `kotlin` | Tree-sitter | **detekt** (needs JDK) |
 | `verilog` | Tree-sitter | **verilator** (--lint-only) |
 | `generic` | Tree-sitter (Scala / C# / Swift / Julia) | — |
-| LLM-only | MATLAB · R · Verilog · SAS · COBOL · Solidity · Zig · ObjC · Dart | — |
+| LLM-only | MATLAB · R · SAS · COBOL · Solidity · Zig · ObjC · Dart | — |
 
 Default `auto` walks the repo, counts file extensions + marker files,
 picks the best match. Override with `--profile <name>`.
@@ -594,7 +594,7 @@ on exit `2`.
 
 | | Other LLM review tools | revio |
 |---|---|---|
-| Static-analysis backbone | One LLM call per file | 6 deterministic analyzers + LLM on top |
+| Static-analysis backbone | One LLM call per file | 13 deterministic analyzers + LLM on top |
 | Hallucinated findings | Common (LLM invents paths) | Grounding validator rejects un-read files |
 | Token cost on a large repo | Re-reads whole files | Pulls only enclosing functions via Tree-sitter |
 | Company-specific rules | Generic prompt only | RAG over your own guidelines |
