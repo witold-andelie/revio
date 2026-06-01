@@ -36,6 +36,16 @@ _ANTHROPIC_PROVIDERS = {"anthropic", "mimo"}
 # Providers that speak OpenAI's chat/completions + tools API.
 _OPENAI_PROVIDERS = {"openai_compat", "custom"}
 
+# Substrings in model IDs that flag the model as reasoner-style.
+# These models reject `temperature` and emit `reasoning_content` that the
+# server then rejects if echoed back in input messages.
+_REASONER_MARKERS = ("reasoner", "-r1", "o1-", "o3-", "thinking", "qwq", "deepthink")
+
+
+def _is_reasoner_model(model: str) -> bool:
+    m = (model or "").lower()
+    return any(tok in m for tok in _REASONER_MARKERS)
+
 
 def make_llm(config: Config, max_tokens: int = 4096) -> Any:
     """Build a chat-model LLM from config, ready for tool binding.
@@ -73,7 +83,6 @@ def _make_anthropic(config: Config, api_key: str, max_tokens: int):
         "model": config.llm.model,
         "api_key": api_key,
         "max_tokens": max_tokens,
-        "temperature": 0,
     }
 
     default_url = "https://api.anthropic.com"
@@ -81,7 +90,18 @@ def _make_anthropic(config: Config, api_key: str, max_tokens: int):
         kwargs["base_url"] = config.llm.api_url
 
     if config.llm.disable_thinking:
+        # Thinking off — deterministic sampling is fine and is what the
+        # rest of the agent assumes (grounding validator + JSON outputs).
         kwargs["thinking"] = {"type": "disabled"}
+        kwargs["temperature"] = 0
+    else:
+        # Thinking on — Anthropic requires temperature=1 when extended
+        # thinking is enabled; passing temperature=0 makes the API reject
+        # the request. Budget of 2048 covers normal review/audit prompts
+        # while staying well under max_tokens. Mimo and other Anthropic-
+        # compat gateways that default-enable thinking also accept this.
+        kwargs["thinking"] = {"type": "enabled", "budget_tokens": 2048}
+        kwargs["temperature"] = 1
 
     return ChatAnthropic(**kwargs)
 
@@ -96,8 +116,17 @@ def _make_openai(config: Config, api_key: str, max_tokens: int):
         "model": config.llm.model,
         "api_key": api_key,
         "max_tokens": max_tokens,
-        "temperature": 0,
     }
+
+    if _is_reasoner_model(config.llm.model):
+        # Reasoner models (deepseek-reasoner, o1, o3, qwq, glm-zero, ...)
+        # reject `temperature` outright. Omit it; the API picks its own
+        # internal sampling. Also note: react_node strips reasoning_content
+        # from message history before each turn (see graph.py) because
+        # these providers reject it as input.
+        pass
+    else:
+        kwargs["temperature"] = 0
 
     if config.llm.api_url:
         # ChatOpenAI uses `base_url`; most OAI-compatible endpoints accept

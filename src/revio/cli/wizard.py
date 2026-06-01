@@ -62,7 +62,16 @@ _PROVIDER_DEFAULTS = {
     "DeepSeek": {
         "key": "openai_compat",
         "url": "https://api.deepseek.com",
-        "models": ["deepseek-chat", "deepseek-reasoner"],
+        # Order matters — the wizard picks the first as the default suggestion.
+        # Kept aligned with models_catalog.py (v4-pro = strongest;
+        # deepseek-chat / deepseek-reasoner remain as legacy aliases that
+        # still resolve on the deepseek endpoint).
+        "models": [
+            "deepseek-v4-pro",
+            "deepseek-v4-flash",
+            "deepseek-chat",
+            "deepseek-reasoner",
+        ],
         "disable_thinking_default": False,
     },
     "OpenAI-compatible (OpenRouter / Together / ...)": {

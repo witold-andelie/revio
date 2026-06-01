@@ -141,9 +141,10 @@ pip install "git+https://github.com/witold-andelie/revio.git#egg=revio[js,plc,py
 .venv/bin/revio
 ```
 
-Triggers a 6-step wizard: pick **provider** → **API URL** → **key** →
-**model** → **thinking mode** → **default profile**. Tests the
-connection, then saves to `~/.config/revio/config.toml`.
+Triggers a 7-step wizard: pick **provider** → **API URL** → **key** →
+**model** → **thinking mode** → **default profile** → **connection test**.
+The final step makes one tiny API call to verify credentials, then
+saves the result to `~/.config/revio/config.toml`.
 
 ---
 
@@ -246,7 +247,7 @@ Three paths, easiest first:
 | Change endpoint URL | `/url https://api.mistral.ai/v1` |
 | Rotate API key (masked input) | `/key` |
 | Open the full config file in `$EDITOR` | `/config` |
-| Re-run the 6-step wizard | `revio config init` |
+| Re-run the 7-step wizard | `revio config init` |
 
 The `/model` picker hits `GET /v1/models` on the current endpoint at
 runtime, so for any new provider (Mistral, a new Xiaomi API, your

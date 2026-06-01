@@ -237,6 +237,15 @@ async def react_node(state: AgentState, config) -> dict:
             )
             break
 
+        # Reasoner-style providers (deepseek-reasoner, o1, qwq, ...) emit
+        # `reasoning_content` in additional_kwargs. If we echo that field
+        # back as part of the next request's message history, the server
+        # rejects it ("reasoning_content not allowed in input messages").
+        # Strip it from the assistant message we just received before
+        # appending — the visible content + tool_calls are preserved.
+        if hasattr(response, "additional_kwargs") and response.additional_kwargs:
+            response.additional_kwargs.pop("reasoning_content", None)
+
         messages.append(response)
 
         tool_calls = getattr(response, "tool_calls", None) or []
