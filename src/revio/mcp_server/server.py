@@ -13,9 +13,10 @@ for that, so we expose revio's pipelines as MCP tools.
   · revio_review           — diff-scoped review
   · revio_dedup            — AI-redundancy scan (returns findings + patches,
                               does NOT apply them — caller decides)
-  · revio_run_bandit       — Python security scan (Layer 2 only, no LLM cost)
-  · revio_run_oxlint       — JS/TS lint (Layer 2 only)
-  · revio_run_cppcheck     — C/C++ analysis (Layer 2 only)
+  · revio_run_<analyzer>   — one tool per Layer 2 analyzer (13 total):
+                              bandit, oxlint, cppcheck, clippy, spotbugs,
+                              golangci_lint, shellcheck, luacheck, sqlfluff,
+                              rubocop, phpstan, detekt, verilator
   · revio_search_guidelines — RAG query over indexed org guidelines
   · revio_list_profiles    — what languages/profiles are available
   · revio_detect_profile   — auto-detect the right profile for a repo
@@ -26,9 +27,11 @@ for that, so we expose revio's pipelines as MCP tools.
    are exposed as MCP tools but the host agent should treat them as
    "long-running operations". MCP supports this fine.
 
-2. The "run individual analyzer" tools (bandit, oxlint, cppcheck) are
-   SYNCHRONOUS and FAST (~1-3s). They DO NOT call the LLM and are free
-   for the host agent to call casually.
+2. The "run individual analyzer" tools (13 of them, one per Layer 2
+   backend) are SYNCHRONOUS and FAST (~1-3s). They DO NOT call the LLM
+   and are free for the host agent to call casually. New analyzers are
+   added by registering them in `_ANALYZER_RUNNERS` below; the @mcp.tool
+   wrapper is generated automatically.
 
 3. We deliberately do NOT expose `revio_dedup --fix` (the apply step).
    The host agent should call `revio_dedup`, inspect the returned
@@ -56,6 +59,26 @@ def _load_config():
     return load_config()
 
 
+# Registry of every Layer-2 analyzer exposed as its own MCP tool.
+# Tuple: (module suffix under revio.layers.static, RunnerClass attr name,
+#         entry method name, language blurb for the tool description).
+_ANALYZER_RUNNERS: dict[str, tuple[str, str, str, str]] = {
+    "bandit":        ("bandit",        "BanditRunner",       "scan_to_findings", "Python security scan"),
+    "oxlint":        ("oxlint",        "OxlintRunner",       "lint_to_findings", "JS/TS lint"),
+    "cppcheck":      ("cppcheck",      "CppcheckRunner",     "scan_to_findings", "C/C++ analysis"),
+    "clippy":        ("clippy",        "ClippyRunner",       "scan_to_findings", "Rust lint via cargo clippy"),
+    "spotbugs":      ("spotbugs",      "SpotBugsRunner",     "scan_to_findings", "Java bytecode analysis (needs .class)"),
+    "golangci_lint": ("golangci_lint", "GolangCILintRunner", "scan_to_findings", "Go meta-linter"),
+    "shellcheck":    ("shellcheck",    "ShellcheckRunner",   "scan_to_findings", "Shell script analysis"),
+    "luacheck":      ("luacheck",      "LuacheckRunner",     "scan_to_findings", "Lua lint"),
+    "sqlfluff":      ("sqlfluff",      "SqlfluffRunner",     "scan_to_findings", "SQL lint (multi-dialect)"),
+    "rubocop":       ("rubocop",       "RubocopRunner",      "scan_to_findings", "Ruby lint"),
+    "phpstan":       ("phpstan",       "PhpstanRunner",      "scan_to_findings", "PHP static analysis"),
+    "detekt":        ("detekt",        "DetektRunner",       "scan_to_findings", "Kotlin lint (needs JDK)"),
+    "verilator":     ("verilator",     "VerilatorRunner",    "scan_to_findings", "Verilog/SystemVerilog --lint-only"),
+}
+
+
 def build_server() -> FastMCP:
     """Construct the FastMCP server with all revio tools registered."""
     mcp = FastMCP(
@@ -65,7 +88,10 @@ def build_server() -> FastMCP:
             "revio_audit for a full security scan, revio_dedup to find "
             "AI-generated redundancy, or revio_review to assess a diff. "
             "For cheap Layer-2-only analysis without the LLM cost, call "
-            "revio_run_bandit/oxlint/cppcheck. All paths must be absolute."
+            "revio_run_<analyzer> (13 tools, one per backend: bandit, "
+            "oxlint, cppcheck, clippy, spotbugs, golangci_lint, shellcheck, "
+            "luacheck, sqlfluff, rubocop, phpstan, detekt, verilator). "
+            "All paths must be absolute."
         ),
     )
 
@@ -127,37 +153,25 @@ def build_server() -> FastMCP:
         )
 
     # --- Layer-2-only tools (fast, no LLM) -----------------------------------
+    # One @mcp.tool per analyzer in _ANALYZER_RUNNERS, generated in a loop.
+    # Factory function closes over `analyzer_name` per iteration; FastMCP
+    # disallows leading-underscore parameters, so a fresh inner def per
+    # analyzer is the cleanest binding strategy.
 
-    @mcp.tool(
-        name="revio_run_bandit",
-        description=(
-            "Run the bandit Python security scanner over a path. Returns "
-            "findings as JSON. No LLM cost — pure static analysis (~1-3s). "
-            "path must be absolute, can be a file or directory."
-        ),
-    )
-    def revio_run_bandit(path: str) -> str:
-        return _run_static_analyzer("bandit", path)
+    def _make_analyzer_tool(analyzer_name: str):
+        def runner(path: str) -> str:
+            return _run_static_analyzer(analyzer_name, path)
+        return runner
 
-    @mcp.tool(
-        name="revio_run_oxlint",
-        description=(
-            "Run oxlint over JS/TS code. Fast (~1s), no LLM cost. "
-            "path must be absolute."
-        ),
-    )
-    def revio_run_oxlint(path: str) -> str:
-        return _run_static_analyzer("oxlint", path)
-
-    @mcp.tool(
-        name="revio_run_cppcheck",
-        description=(
-            "Run cppcheck over C/C++ code. Fast (~1-3s), no LLM cost. "
-            "path must be absolute."
-        ),
-    )
-    def revio_run_cppcheck(path: str) -> str:
-        return _run_static_analyzer("cppcheck", path)
+    for name, (_mod, _cls, _method, blurb) in _ANALYZER_RUNNERS.items():
+        mcp.tool(
+            name=f"revio_run_{name}",
+            description=(
+                f"Run {name} — {blurb}. Fast (~1-3s), no LLM cost. "
+                f"path must be absolute, can be a file or directory. "
+                f"Returns findings as JSON."
+            ),
+        )(_make_analyzer_tool(name))
 
     # --- Discovery / context tools (instant) ---------------------------------
 
@@ -269,31 +283,25 @@ async def _run_pipeline(
 
 
 def _run_static_analyzer(name: str, path: str) -> str:
-    """Dispatch one analyzer and return its findings as JSON."""
+    """Dispatch one analyzer (registered in _ANALYZER_RUNNERS) and return
+    its findings as JSON."""
     abs_path = Path(path).expanduser().resolve()
     if not abs_path.exists():
         return json.dumps({"error": f"path does not exist: {abs_path}"})
 
+    spec = _ANALYZER_RUNNERS.get(name)
+    if spec is None:
+        return json.dumps({"error": f"unknown analyzer: {name}"})
+    mod_suffix, cls_name, method_name, _blurb = spec
+
     repo_root = abs_path if abs_path.is_dir() else abs_path.parent
 
     try:
-        if name == "bandit":
-            from ..layers.static.bandit import BanditRunner
+        import importlib
 
-            runner = BanditRunner()
-            findings = runner.scan_to_findings(abs_path, repo_root=repo_root)
-        elif name == "oxlint":
-            from ..layers.static.oxlint import OxlintRunner
-
-            runner = OxlintRunner()
-            findings = runner.lint_to_findings(abs_path, repo_root=repo_root)
-        elif name == "cppcheck":
-            from ..layers.static.cppcheck import CppcheckRunner
-
-            runner = CppcheckRunner()
-            findings = runner.scan_to_findings(abs_path, repo_root=repo_root)
-        else:
-            return json.dumps({"error": f"unknown analyzer: {name}"})
+        mod = importlib.import_module(f"revio.layers.static.{mod_suffix}")
+        runner = getattr(mod, cls_name)()
+        findings = getattr(runner, method_name)(abs_path, repo_root=repo_root)
     except Exception as e:
         return json.dumps({"error": f"{type(e).__name__}: {e}", "analyzer": name})
 

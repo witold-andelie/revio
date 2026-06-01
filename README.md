@@ -1,9 +1,8 @@
 # revio
 
 **Agentic code review CLI** that combines LangGraph-orchestrated LLM
-reasoning with deterministic static analyzers (oxlint / bandit / clippy /
-spotbugs / golangci-lint / cppcheck + 30 PLC rules) across
-**17 language profiles**.
+reasoning with **13 deterministic static analyzers** + 30+ PLC rules
+across **23 language profiles**.
 
 ```
 $ revio review --commit HEAD
@@ -22,7 +21,7 @@ $ revio review --commit HEAD
 | | What |
 |---|---|
 | **3 modes** | `review` (diff) · `audit` (full repo) · `dedup` (find AI redundancy) |
-| **17 languages** | JS/TS · Python · Rust · Java · Go · C/C++ · Shell · Lua · SQL · Ruby · PHP · Kotlin · **Verilog/SystemVerilog** · 4 generic · PLC · 8 LLM-only |
+| **23 languages** | JS/TS · Python · Rust · Java · Go · C/C++ · Shell · Lua · SQL · Ruby · PHP · Kotlin · **Verilog/SystemVerilog** · 4 generic · PLC · 8 LLM-only |
 | **13 static analyzers** | oxlint · bandit · clippy · spotbugs · golangci-lint · cppcheck · shellcheck · luacheck · sqlfluff · rubocop · phpstan · detekt · **verilator** |
 | **Local / self-hosted LLM** | Point at any Ollama / vLLM / private endpoint — code never leaves the machine. **Free + air-gap + FERPA/GDPR-safe.** |
 | **PLC support** | 7 vendor parsers · 30+ PLCopen rules · HW audit · LD/FBD/SFC → ST |
@@ -73,7 +72,7 @@ Re-run the same install command anytime to update to the latest `main`.
 
 | What | Size |
 |---|---|
-| Core (agent runtime + CLI + Tree-sitter grammars + 13 profiles) | **~150 MB** |
+| Core (agent runtime + CLI + Tree-sitter grammars + 23 profiles) | **~150 MB** |
 | + RAG (chromadb + sentence-transformers + torch) | +~1 GB |
 | + HuggingFace embedding model (first RAG use) | +~80 MB |
 | Per-language analyzer binaries (oxlint / cppcheck / shellcheck / etc.) | ~1-30 MB each |
@@ -425,9 +424,18 @@ servers degrade gracefully.
 revio mcp-server               # stdio MCP server
 ```
 
-Tools exposed: `revio_audit`, `revio_review`, `revio_dedup`,
-`revio_run_bandit`, `revio_run_oxlint`, `revio_run_cppcheck`,
-`revio_search_guidelines`, `revio_list_profiles`, `revio_detect_profile`.
+Tools exposed (19 total):
+
+- **Full pipelines** (LLM-backed, 20-60s): `revio_audit`, `revio_review`,
+  `revio_dedup`.
+- **Per-analyzer Layer 2** (no LLM, ~1-3s; one tool per analyzer):
+  `revio_run_bandit` · `revio_run_oxlint` · `revio_run_cppcheck` ·
+  `revio_run_clippy` · `revio_run_spotbugs` · `revio_run_golangci_lint` ·
+  `revio_run_shellcheck` · `revio_run_luacheck` · `revio_run_sqlfluff` ·
+  `revio_run_rubocop` · `revio_run_phpstan` · `revio_run_detekt` ·
+  `revio_run_verilator`.
+- **Discovery / context** (instant): `revio_search_guidelines`,
+  `revio_list_profiles`, `revio_detect_profile`.
 
 Register with Claude Code:
 ```json
@@ -598,7 +606,7 @@ on exit `2`.
 | Hallucinated findings | Common (LLM invents paths) | Grounding validator rejects un-read files |
 | Token cost on a large repo | Re-reads whole files | Pulls only enclosing functions via Tree-sitter |
 | Company-specific rules | Generic prompt only | RAG over your own guidelines |
-| PLC / industrial control | Not supported | 7 vendor parsers + 30 PLCopen + HW audit |
+| PLC / industrial control | Not supported | 7 vendor parsers + 30+ PLCopen + HW audit |
 | LLM provider | Vendor-locked | Anthropic + any OpenAI-compat |
 | Cross-session memory | Stateless | SQLite history — "🆕 New since last run" |
 | Auto-fix | Text suggestion only | `--fix` actually edits files |
