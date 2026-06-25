@@ -21,6 +21,7 @@ $ revio review --commit HEAD
 | | What |
 |---|---|
 | **3 modes** | `review` (diff) · `audit` (full repo) · `dedup` (find AI redundancy) |
+| **Targeted review** | Scan a **single file** by path, or **paste code straight into the chat** — reviewed in place, no repo or diff needed |
 | **23 languages** | JS/TS · Python · Rust · Java · Go · C/C++ · Shell · Lua · SQL · Ruby · PHP · Kotlin · **Verilog/SystemVerilog** · 4 generic · PLC · 8 LLM-only |
 | **13 static analyzers** | oxlint · bandit · clippy · spotbugs · golangci-lint · cppcheck · shellcheck · luacheck · sqlfluff · rubocop · phpstan · detekt · **verilator** |
 | **Local / self-hosted LLM** | Point at any Ollama / vLLM / private endpoint — code never leaves the machine. **Free + air-gap + FERPA/GDPR-safe.** |
@@ -130,6 +131,7 @@ pip install "git+https://github.com/witold-andelie/revio.git#egg=revio[js,plc,py
 | PHP | phpstan | `composer global require phpstan/phpstan` | (same; needs PHP + Composer) |
 | Kotlin | detekt | `brew install detekt` (needs JDK) | download `detekt-cli` from GitHub |
 | Verilog / SystemVerilog | verilator | `brew install verilator` / `apt install verilator` | `scoop install verilator` |
+| PLC (Structured Text) | built-in rules | (already in `[plc]` extra — nothing to install) | (already in `[plc]` extra — nothing to install) |
 
 **Missing analyzers don't break anything** — revio detects what's installed and falls back to AST + LLM reasoning for the rest.
 
@@ -458,6 +460,8 @@ revio              # drop into REPL
 > review the last 3 commits
 > 检查这个项目里有没有重复代码         ← reply comes back in Chinese
 > Vérifie src/auth.py pour des fuites  ← reply comes back in French
+> check this file: src/auth.py         ← scans just that one file
+> (paste a fenced code block + a note)  ← reviews the snippet inline, no file needed
 > clean up the duplicate / junk code   ← runs dedup
 > switch the model to claude-opus-4-7  ← changes a setting, no slash needed
 > set my api key                       ← prompts securely (key never typed inline)
@@ -481,7 +485,11 @@ revio              # drop into REPL
 Non-slash input is routed by an intent LLM (multilingual by design) into:
 
 - **`review` / `audit` / `dedup`** — run the agent in that mode. "Clean up
-  the junk / duplicate code" maps to `dedup`.
+  the junk / duplicate code" maps to `dedup`. The target can be the whole
+  repo, **a single file** (give its path — it's scanned on its own), or
+  **a code snippet you paste in** (wrap it in a ```` ``` ```` fence, or just
+  paste obvious multi-line code — it's reviewed from a throwaway temp file,
+  no repo needed).
 - **`config`** — change a setting in plain language ("switch the model to
   claude-opus-4-7", "set my api key", "budget 30", "use the endpoint
   https://api.mistral.ai/v1", "show my config", "how much did this cost").
