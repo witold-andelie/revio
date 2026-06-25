@@ -27,6 +27,7 @@ class AgentState(TypedDict, total=False):
     repo_path: str
     target_ref: str            # e.g. "HEAD", "main..feature", or "" for full-repo
     target_description: str    # human description for prompts
+    target_files: list[str]    # repo-relative paths to scope the review to (empty = whole repo)
     profile_name: str          # which profile is active
     profile_hints: str         # the profile's reasoning hints
 

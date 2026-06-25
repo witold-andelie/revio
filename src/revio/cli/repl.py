@@ -100,7 +100,10 @@ performs the change, chosen ONLY from this whitelist (never invent others):
   /config               show / open the config file
 
 For review / audit / dedup also extract:
-- target_path : relative or absolute filesystem path mentioned (string or null)
+- target_path : relative or absolute filesystem path mentioned (string or null).
+                This MAY be a single FILE (e.g. "src/auth.py", "C:\\app\\db.go")
+                — extract it precisely so that one file can be scanned on its own,
+                not just a directory.
 - target_ref  : a git commit, branch, or "HEAD" if mentioned (string or null)
 - focus_area  : security / performance / readability / etc. (string or null)
 
@@ -199,10 +202,18 @@ def run_repl():
         if not line:
             continue
 
-        if line.startswith("/"):
+        # Slash commands are always single-line; a multi-line paste starting
+        # with "/" is treated as content, not a command.
+        if line.startswith("/") and "\n" not in line:
             keep_going = _handle_slash(line, cfg, state)
             if not keep_going:
                 return
+            continue
+
+        # Pasted code snippet — review the code inline (no file path needed).
+        snippet = _extract_snippet(line)
+        if snippet:
+            _handle_snippet_input(*snippet, cfg, state)
             continue
 
         # Natural language — classify, route, execute
@@ -225,6 +236,8 @@ def _print_banner(cfg: Config, state: dict) -> None:
             "Examples:\n"
             "  • [dim]review the last commit[/]\n"
             "  • [dim]audit src/auth for security issues[/]\n"
+            "  • [dim]check this file: src/auth.py[/]   [dim](scans just that file)[/]\n"
+            "  • [dim]paste code (optionally in ```fences```) to review it inline[/]\n"
             "  • [dim]clean up the duplicate / junk code[/]\n"
             "  • [dim]switch the model to claude-opus-4-7[/]\n"
             "  • [dim]set my api key[/]   ·   [dim]what can you do?[/]",
@@ -477,6 +490,8 @@ _VALID_INTENTS = {"review", "audit", "dedup", "config", "capability", "out_of_sc
 CAPABILITIES = [
     ("Review a diff or commit",
      "review the last commit · 看看这次改动"),
+    ("Scan a single file, or code you paste straight into the chat",
+     "check this file: src/auth.py · paste code in ```fences``` to review it"),
     ("Audit the whole repo for security & quality issues",
      "audit src/ for vulnerabilities · 扫描漏洞"),
     ("Find & clean AI-generated / vibe-coding redundancy (dupes, dead code)",
@@ -564,6 +579,190 @@ def _handle_config_intent(classification: dict, cfg: Config, state: dict) -> Non
     _handle_slash(slash, cfg, state)
 
 
+def _git_root_of(path: Path) -> Path | None:
+    """Return the git top-level dir containing `path`, or None if not in a repo."""
+    start = path if path.is_dir() else path.parent
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(start), "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    root = out.stdout.strip()
+    return Path(root) if root else None
+
+
+def _run_agent_on(
+    *,
+    mode: str,
+    repo_path: Path,
+    cfg: Config,
+    state: dict,
+    target_ref: str = "",
+    target_files: list[str] | None = None,
+    target_description: str = "",
+) -> None:
+    """Shared agent-run path for NL/file/snippet inputs.
+
+    Runs the agent against `repo_path`, optionally scoped to `target_files`,
+    streams output, folds token usage back into the session, and prints the
+    fresh-task separator. All run paths funnel through here so accounting and
+    error handling stay identical.
+    """
+    run_cfg = cfg.model_copy(
+        update={"agent": cfg.agent.model_copy(update={"max_tool_calls": state["budget"]})}
+    )
+
+    from ..agent import run_agent_sync
+
+    renderer = StreamRenderer(_console)
+    try:
+        report = run_agent_sync(
+            mode=mode,
+            repo_path=str(repo_path),
+            target_ref=target_ref,
+            target_files=target_files or [],
+            target_description=target_description,
+            profile_name=state["profile"],
+            config=run_cfg,
+            on_event=renderer.handle,
+        )
+        # Carry forward per-session token totals so /cost is accurate
+        state["session_tokens_in"] = state.get("session_tokens_in", 0) + report.total_input_tokens
+        state["session_tokens_out"] = state.get("session_tokens_out", 0) + report.total_output_tokens
+        state["session_cost_usd"] = state.get("session_cost_usd", 0.0) + report.est_cost_usd
+        state["session_llm_calls"] = state.get("session_llm_calls", 0) + report.llm_call_count
+    except KeyboardInterrupt:
+        _console.print("\n[yellow]Investigation interrupted.[/]")
+    except Exception as e:
+        _console.print(f"\n  [red]✗[/] Agent failed: {e}")
+        if os.environ.get("REVIO_DEBUG"):
+            import traceback
+
+            traceback.print_exc()
+    finally:
+        # Visual separator + owl mascot so the next prompt feels like
+        # a fresh task, not a continuation. Skipped on non-TTY (CI).
+        from .mascot import play_startup_animation
+
+        _console.print()
+        play_startup_animation(_console)
+        _console.print()
+
+
+# --- Pasted-code-snippet review ----------------------------------------------
+
+# Fenced code block: ```lang\n...code...\n```  (lang tag optional)
+_FENCE_RE = re.compile(r"```([A-Za-z0-9_+-]*)\n(.*?)```", re.DOTALL)
+
+# Strong structural tokens that mark a line as "code, not prose".
+_CODE_TOKEN_RE = re.compile(
+    r"(;\s*$|[{}]\s*$|=>|\bdef\s|\bfunction\s|\bclass\s|\breturn\s|#include|"
+    r"\bimport\s|\bpublic\s|\bprivate\s|\bstatic\s|\bconst\s|\blet\s|\bvar\s|"
+    r"\bif\s*\(|\bfor\s*\(|\bwhile\s*\()"
+)
+
+# Language tag (from the fence) → file extension.
+_LANG_EXT = {
+    "python": ".py", "py": ".py",
+    "javascript": ".js", "js": ".js", "jsx": ".jsx",
+    "typescript": ".ts", "ts": ".ts", "tsx": ".tsx",
+    "c": ".c", "cpp": ".cpp", "c++": ".cpp", "cc": ".cpp", "h": ".h",
+    "go": ".go", "golang": ".go", "rust": ".rs", "rs": ".rs",
+    "java": ".java", "kotlin": ".kt", "kt": ".kt",
+    "ruby": ".rb", "rb": ".rb", "php": ".php",
+    "shell": ".sh", "bash": ".sh", "sh": ".sh",
+    "lua": ".lua", "sql": ".sql",
+    "verilog": ".v", "systemverilog": ".sv", "sv": ".sv",
+    "st": ".st", "plc": ".st", "iecst": ".st",
+}
+
+# Active profile → default extension when no fence language tag is present.
+_PROFILE_EXT = {"js": ".js", "python": ".py", "plc": ".st"}
+
+
+def _extract_snippet(text: str) -> tuple[str, str | None, str] | None:
+    """Detect a pasted code snippet in REPL input.
+
+    Returns (code, lang_tag_or_None, surrounding_instruction) if `text` is a
+    code snippet to review, else None.
+
+    Two triggers (per the chosen UX): an explicit ```fenced``` block always
+    wins; otherwise a CONSERVATIVE multi-line auto-detect catches obvious code
+    (≥3 lines with strong structural tokens) without swallowing prose.
+    """
+    # 1) Explicit fenced block — most reliable. Text outside the fence is the
+    #    user's instruction/focus.
+    m = _FENCE_RE.search(text)
+    if m:
+        lang = (m.group(1) or "").strip().lower() or None
+        code = m.group(2).strip("\n")
+        instruction = (text[: m.start()] + " " + text[m.end():]).strip().strip("`").strip()
+        if code.strip():
+            return code, lang, instruction
+
+    # 2) Conservative fence-less auto-detect: only when it really looks like a
+    #    code paste, never for ordinary multi-line questions.
+    lines = text.splitlines()
+    nonblank = [ln for ln in lines if ln.strip()]
+    if len(nonblank) < 3:
+        return None
+    code_like = sum(1 for ln in nonblank if _CODE_TOKEN_RE.search(ln))
+    indented = sum(1 for ln in lines if ln[:1] in (" ", "\t") and ln.strip())
+    # Require multiple structural-token lines AND that code dominates the input.
+    if code_like >= 2 and (code_like + indented) >= len(nonblank) * 0.5:
+        return text.strip("\n"), None, ""
+    return None
+
+
+def _ext_for_snippet(lang: str | None, state: dict) -> str:
+    """Pick a file extension for a pasted snippet: fence tag → profile → .txt."""
+    if lang and lang in _LANG_EXT:
+        return _LANG_EXT[lang]
+    return _PROFILE_EXT.get(state.get("profile", ""), ".txt")
+
+
+def _handle_snippet_input(
+    code: str, lang: str | None, instruction: str, cfg: Config, state: dict
+) -> None:
+    """Review a code snippet pasted straight into the chat box.
+
+    The snippet is written to a throwaway temp dir as a single file, scanned
+    with the same scoped pipeline as a single-file review, then cleaned up.
+    """
+    import shutil
+    import tempfile
+
+    ext = _ext_for_snippet(lang, state)
+    tmpdir = Path(tempfile.mkdtemp(prefix="revio_snippet_"))
+    try:
+        fname = f"snippet{ext}"
+        (tmpdir / fname).write_text(code, encoding="utf-8")
+
+        desc = "the pasted code snippet"
+        if instruction:
+            desc += f' (user note: "{instruction[:200]}")'
+
+        n_lines = len(code.splitlines())
+        _console.print(
+            f"  [dim]· reviewing pasted snippet[/] "
+            f"[cyan]{fname}[/] [dim]({n_lines} lines)[/]"
+        )
+        _run_agent_on(
+            mode=state["mode"],
+            repo_path=tmpdir,
+            cfg=cfg,
+            state=state,
+            target_files=[fname],
+            target_description=desc,
+        )
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 def _handle_nl_input(line: str, cfg: Config, state: dict) -> None:
     """Classify intent → run agent, change a setting, or explain the boundary."""
     classification = _classify_intent(line, cfg)
@@ -591,53 +790,45 @@ def _handle_nl_input(line: str, cfg: Config, state: dict) -> None:
     # Resolve target path
     target_path = classification.get("target_path")
     if target_path:
-        repo_path = Path(target_path).expanduser()
-        if not repo_path.is_absolute():
-            repo_path = state["cwd"] / repo_path
-        repo_path = repo_path.resolve()
+        resolved = Path(target_path).expanduser()
+        if not resolved.is_absolute():
+            resolved = state["cwd"] / resolved
+        resolved = resolved.resolve()
     else:
-        repo_path = state["cwd"]
+        resolved = state["cwd"]
 
     target_ref = classification.get("target_ref") or ""
 
-    # Override session budget into config
-    run_cfg = cfg.model_copy(
-        update={"agent": cfg.agent.model_copy(update={"max_tool_calls": state["budget"]})}
+    # Single-file scope: if the path points at a FILE (not a directory), root
+    # the run at its git/parent dir and lock the review to just that one file.
+    target_files: list[str] | None = None
+    target_description = ""
+    if resolved.is_file():
+        file_path = resolved
+        repo_root = _git_root_of(file_path) or file_path.parent
+        try:
+            rel = file_path.relative_to(repo_root).as_posix()
+        except ValueError:
+            repo_root = file_path.parent
+            rel = file_path.name
+        target_files = [rel]
+        target_description = f"the single file `{rel}`"
+        resolved = repo_root
+        target_ref = ""  # no diff for a standalone file
+        _console.print(f"  [dim]· scoping to single file:[/] [cyan]{rel}[/]")
+    elif not resolved.is_dir():
+        _console.print(f"  [red]✗[/] path not found: {resolved}")
+        return
+
+    _run_agent_on(
+        mode=intent,
+        repo_path=resolved,
+        cfg=cfg,
+        state=state,
+        target_ref=target_ref,
+        target_files=target_files,
+        target_description=target_description,
     )
-
-    from ..agent import run_agent_sync
-
-    renderer = StreamRenderer(_console)
-    try:
-        report = run_agent_sync(
-            mode=intent,
-            repo_path=str(repo_path),
-            target_ref=target_ref,
-            profile_name=state["profile"],
-            config=run_cfg,
-            on_event=renderer.handle,
-        )
-        # Carry forward per-session token totals so /cost is accurate
-        state["session_tokens_in"] = state.get("session_tokens_in", 0) + report.total_input_tokens
-        state["session_tokens_out"] = state.get("session_tokens_out", 0) + report.total_output_tokens
-        state["session_cost_usd"] = state.get("session_cost_usd", 0.0) + report.est_cost_usd
-        state["session_llm_calls"] = state.get("session_llm_calls", 0) + report.llm_call_count
-    except KeyboardInterrupt:
-        _console.print("\n[yellow]Investigation interrupted.[/]")
-    except Exception as e:
-        _console.print(f"\n  [red]✗[/] Agent failed: {e}")
-        if os.environ.get("REVIO_DEBUG"):
-            import traceback
-
-            traceback.print_exc()
-    finally:
-        # Visual separator + owl mascot so the next prompt feels like
-        # a fresh task, not a continuation. Skipped on non-TTY (CI).
-        from .mascot import play_startup_animation
-
-        _console.print()
-        play_startup_animation(_console)
-        _console.print()
 
 
 def _classify_intent(user_input: str, cfg: Config) -> dict | None:

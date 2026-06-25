@@ -77,6 +77,7 @@ async def plan_node(state: AgentState, config) -> dict:
         f"# Plan (strategy only, no tools called yet)\n\n"
         f"{plan_text}\n\n"
         f"---\n\n"
+        f"{_scope_instruction(state)}"
         f"{REACT_INTRO_PROMPT}"
     )
 
@@ -84,6 +85,32 @@ async def plan_node(state: AgentState, config) -> dict:
         "plan": plan_text,
         "messages": [SystemMessage(content=system), HumanMessage(content=initial_user)],
     }
+
+
+def _scope_instruction(state: AgentState) -> str:
+    """When the run is scoped to specific files (single-file or pasted-snippet
+    review from the REPL), emit a hard SCOPE LOCK block so the agent reviews
+    ONLY those files and doesn't go hunting for a git diff or wander the repo.
+
+    Returns "" for normal whole-repo / diff runs so their prompts are unchanged.
+    """
+    target_files = state.get("target_files") or []
+    if not target_files:
+        return ""
+
+    file_lines = "\n".join(f"  - {f}" for f in target_files)
+    return (
+        "# SCOPE LOCK — review ONLY these files\n\n"
+        "This run is scoped to the exact file(s) below. There is NO git diff to\n"
+        "compare against — review the CURRENT contents of these files for issues\n"
+        "(security, bugs, quality), per the active mode's priorities.\n\n"
+        f"{file_lines}\n\n"
+        "- Call `read_file` on each path above directly; you may SKIP `list_files`.\n"
+        "- Do NOT report findings about, or read, any other file unless it is\n"
+        "  strictly needed to understand a line inside the scoped file(s).\n"
+        "- Every finding's `file_path` must be one of the scoped paths above.\n\n"
+        "---\n\n"
+    )
 
 
 def _build_skills_section(state: AgentState) -> str:
