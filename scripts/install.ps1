@@ -291,6 +291,7 @@ for ($i = 0; $i -lt $rows; $i++) {
 }
 Write-Host ""
 Write-Host "    Python (bandit) is auto-installed via the [python] extra." -ForegroundColor DarkGray
+Write-Host "    PLC is covered by built-in rules - installed via the [plc] extra, nothing to pick here." -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "    Type the letters for languages you use, e.g. " -NoNewline
 Write-Host "jcqs" -ForegroundColor Cyan -NoNewline

@@ -254,6 +254,7 @@ for ((i = 0; i < HALF; i++)); do
 done
 echo
 echo "    $(c_dim 'Python (bandit) is auto-installed via the [python] extra.')"
+echo "    $(c_dim 'PLC is covered by built-in rules — installed via the [plc] extra, nothing to pick here.')"
 echo
 echo "    Type the letters for languages you use, e.g. $(c_cyan jcqs) for JS+C+SQL+Shell."
 echo "    Or type $(c_cyan '*') to install ALL, or press $(c_cyan 'Enter') to skip all."
