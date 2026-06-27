@@ -91,6 +91,24 @@ class FixHistoryConfig(BaseModel):
     max_file_bytes: int = Field(default=1_048_576, ge=1024)  # 1 MiB
 
 
+class MemoryConfig(BaseModel):
+    """Caps for the auto-pruned on-disk memory stores.
+
+    All cleanup is COUNT-based: when a store exceeds its cap, the OLDEST
+    entries are deleted (no time/age-based expiry). Caps are deliberately
+    generous so normal use effectively never trims, but the stores can never
+    grow without bound.
+
+    - findings_max_rows     : rows kept in each repo's findings_history table
+    - checkpoint_max_runs   : past runs (threads) kept per repo checkpoint DB
+    - repl_history_max_entries : commands kept in the REPL history file
+    """
+
+    findings_max_rows: int = Field(default=5000, ge=100, le=1_000_000)
+    checkpoint_max_runs: int = Field(default=50, ge=2, le=100_000)
+    repl_history_max_entries: int = Field(default=1000, ge=50, le=1_000_000)
+
+
 class MCPServerSpec(BaseModel):
     """One MCP server entry in the user's config."""
 
@@ -122,6 +140,7 @@ class Config(BaseModel):
     output: OutputConfig = Field(default_factory=OutputConfig)
     fix: FixConfig = Field(default_factory=FixConfig)
     fix_history: FixHistoryConfig = Field(default_factory=FixHistoryConfig)
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
 
 

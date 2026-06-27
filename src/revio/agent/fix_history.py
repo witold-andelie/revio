@@ -23,10 +23,12 @@ is the snapshot).
 
 # Auto-rotation
 
-Two caps enforced via `cleanup()`:
+Retention enforced via `cleanup()` (count-based only, runs on every
+begin_session):
 
-  max_sessions  : default 50 → oldest deleted when exceeded
-  max_age_days  : default 30 → time-based purge on every begin_session
+  max_sessions  : default 50 → oldest deleted when the count is exceeded
+  (max_age_days is retained in config for backward-compat but no longer
+   triggers deletion — retention is purely count-based.)
 
 Files larger than `max_file_bytes` (default 1 MiB) are NOT snapshotted;
 the manifest records `oversized` for that path and undo will warn the
@@ -345,7 +347,13 @@ class FixHistoryStore:
     # ---- Cleanup ------------------------------------------------------------
 
     def cleanup(self) -> None:
-        """Enforce max_sessions + max_age_days."""
+        """Enforce the count cap (max_sessions).
+
+        Count-based only: keep the newest `max_sessions` and delete the oldest
+        beyond that. No age-based expiry — sessions are never deleted merely
+        for being old (`max_age_days` is retained for backward-compat but no
+        longer drives deletion).
+        """
         if not self.history_root.is_dir():
             return
 
@@ -354,18 +362,7 @@ class FixHistoryStore:
             key=lambda p: p.name,                # ISO timestamp prefix sorts chrono
         )
 
-        # 1) Age-based purge
-        cutoff = time.time() - self.max_age_days * 86400
-        for d in list(all_dirs):
-            try:
-                mtime = d.stat().st_mtime
-            except OSError:
-                continue
-            if mtime < cutoff:
-                shutil.rmtree(d, ignore_errors=True)
-                all_dirs.remove(d)
-
-        # 2) Count-based purge — keep newest max_sessions, delete the rest.
+        # Count-based purge — keep newest max_sessions, delete the rest.
         # Two callers: begin_session (BEFORE the new manifest is written, so
         # we trim to make room for the incoming session) and explicit
         # `revio fix clean` (no incoming session — exact cap).

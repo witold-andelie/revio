@@ -175,7 +175,9 @@ async def run_agent(
         },
     )
 
-    # Checkpointer — per-repo SQLite, so re-runs against the same repo persist
+    # Checkpointer — per-repo SQLite. NOTE: thread_id below is randomized per
+    # run, so runs are NOT resumed across invocations; the checkpoint DB is
+    # per-run scratch state that we prune after the run (keep most recent N).
     ckpt_dir = Path(config.agent.checkpoint_dir).expanduser()
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     repo_hash = hashlib.sha1(repo_path_resolved.encode()).hexdigest()[:12]
@@ -301,7 +303,7 @@ async def run_agent(
         from .findings_store import FindingsStore
 
         findings_db = ckpt_dir / f"{repo_hash}_findings.sqlite"
-        store = FindingsStore(findings_db)
+        store = FindingsStore(findings_db, max_rows=config.memory.findings_max_rows)
         comparisons = store.compare(report.findings, repo_root=repo_path_resolved)
         new_count = sum(1 for c in comparisons if c.status == "new")
         still_count = sum(1 for c in comparisons if c.status == "still_present")
@@ -318,8 +320,64 @@ async def run_agent(
     except Exception as e:
         logger.warning("findings history skipped: %s", e)
 
+    # Prune the per-repo checkpoint DB — keep only the most recent N runs'
+    # threads. Each run uses a fresh random thread_id and is never resumed,
+    # so older threads are dead scratch state that otherwise grows unbounded.
+    _prune_checkpoint_db(db_path, config.memory.checkpoint_max_runs)
+
     on_event("session_end", {"report": report.model_dump()})
     return report
+
+
+def _prune_checkpoint_db(db_path: Path, keep_runs: int) -> None:
+    """Keep only the most recent `keep_runs` threads in a checkpoint DB.
+
+    Count-based: when the number of distinct threads exceeds the cap, the
+    oldest (by insertion order = max rowid) are deleted from every checkpoint
+    table, then the file is VACUUMed to actually reclaim the freed disk.
+    Best-effort: any error is logged and swallowed (never fails a run).
+    """
+    try:
+        import sqlite3
+
+        if not db_path.is_file():
+            return
+        conn = sqlite3.connect(str(db_path))
+        try:
+            tables = [
+                r[0] for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            ]
+            if "checkpoints" not in tables:
+                return
+            keep = [
+                r[0] for r in conn.execute(
+                    "SELECT thread_id FROM checkpoints GROUP BY thread_id "
+                    "ORDER BY MAX(rowid) DESC LIMIT ?",
+                    (keep_runs,),
+                )
+            ]
+            if not keep:
+                return
+            placeholders = ",".join("?" * len(keep))
+            deleted = 0
+            for t in ("checkpoints", "writes"):
+                if t in tables:
+                    cur = conn.execute(
+                        f"DELETE FROM {t} WHERE thread_id NOT IN ({placeholders})",
+                        keep,
+                    )
+                    deleted += cur.rowcount or 0
+            conn.commit()
+            if deleted:
+                conn.execute("VACUUM")  # reclaim disk; DELETE alone doesn't shrink
+                conn.commit()
+                logger.info("checkpoint prune: removed %d rows, kept %d runs", deleted, len(keep))
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning("checkpoint prune skipped: %s", e)
 
 
 def _dispatch_event(

@@ -149,6 +149,26 @@ def _history_path() -> Path:
     return p
 
 
+def _trim_history_file(path: Path, max_entries: int) -> None:
+    """Keep only the most recent `max_entries` commands in the REPL history.
+
+    prompt_toolkit's FileHistory stores each entry as a `# <timestamp>` line
+    followed by `+`-prefixed content lines, entries separated by blank lines.
+    Count-based, oldest dropped; best-effort (never blocks REPL startup).
+    """
+    try:
+        if not path.is_file():
+            return
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        # Split on each entry's leading "# " timestamp comment.
+        entries = [e for e in re.split(r"\n(?=# )", text.strip("\n")) if e.strip()]
+        if len(entries) <= max_entries:
+            return
+        path.write_text("\n".join(entries[-max_entries:]) + "\n", encoding="utf-8")
+    except Exception:
+        pass
+
+
 _PROMPT_STYLE = Style.from_dict(
     {
         "prompt": "ansicyan bold",
@@ -181,6 +201,9 @@ def run_repl():
         "session_cost_usd": 0.0,
         "session_llm_calls": 0,
     }
+
+    # Count-based cleanup of the REPL history file before we open it.
+    _trim_history_file(_history_path(), cfg.memory.repl_history_max_entries)
 
     session = PromptSession(
         history=FileHistory(str(_history_path())),

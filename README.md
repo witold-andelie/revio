@@ -30,7 +30,7 @@ $ revio review --commit HEAD
 | **Skills** | Anthropic Agent Skills spec, dual-layer (project + user) |
 | **MCP** | Client + server — connects to your tools, exposes its own |
 | **`dedup --fix` + undo** | Applies patches AND records snapshot history — `revio fix undo` reverts any past session |
-| **Cross-session memory** | "🆕 New since last run: 3" — SQLite-backed |
+| **Cross-session memory** | "🆕 New since last run: 3" — SQLite-backed, **auto-pruned** (count-based caps, oldest dropped — never grows unbounded) |
 | **Multi-LLM** | Anthropic · DeepSeek · **Mistral** (EU-sovereign) · OpenAI · OpenRouter · any OpenAI-compatible endpoint |
 | **Multilingual REPL** | Any human language (en / 中 / de / es / 日 ...) → English findings |
 | **Natural-language control** | Plain-language commands run reviews *and* change settings (model / endpoint / key / budget …); out-of-scope asks are flagged at the capability boundary |
@@ -233,6 +233,24 @@ model = "deepseek-v4-pro"
 # api_key = "sk-ant-..."
 # model = "claude-sonnet-4-6"
 ```
+
+### Memory / disk caps
+
+revio's on-disk memory (cross-session findings history, per-repo agent
+checkpoints, REPL command history) is **auto-pruned, count-based** — when a
+store exceeds its cap the oldest entries are dropped, so nothing grows without
+bound. Defaults are generous; tune them under `[memory]`:
+
+```toml
+[memory]
+findings_max_rows        = 5000   # findings remembered per repo
+checkpoint_max_runs      = 50     # past runs kept per repo checkpoint DB
+repl_history_max_entries = 1000   # REPL commands kept in history
+```
+
+`fix undo` history is separately capped by `[fix_history] max_sessions`
+(also count-based). All caches live under `~/.cache/revio/` and can be wiped
+by hand at any time.
 
 For per-project overrides, drop a `.revio.toml` in the repo root —
 shadows the user-global config and is meant to be committed.

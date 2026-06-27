@@ -92,9 +92,11 @@ class FindingComparison:
 class FindingsStore:
     """SQLite-backed persistent findings store, one DB per repo."""
 
-    def __init__(self, db_path: Path | str):
+    def __init__(self, db_path: Path | str, *, max_rows: int | None = None):
         self.db_path = Path(db_path).expanduser().resolve()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        # Count-based retention cap; None = unbounded (callers that care pass it).
+        self.max_rows = max_rows
         self._ensure_schema()
 
     @contextmanager
@@ -181,6 +183,21 @@ class FindingsStore:
                         ),
                     )
                     stats["new"] += 1
+
+            # Count-based retention: keep the newest `max_rows` by last_seen,
+            # delete the oldest beyond the cap (same connection, cheap).
+            if self.max_rows is not None:
+                c.execute(
+                    """
+                    DELETE FROM findings_history
+                    WHERE fingerprint NOT IN (
+                        SELECT fingerprint FROM findings_history
+                        ORDER BY last_seen DESC
+                        LIMIT ?
+                    )
+                    """,
+                    (self.max_rows,),
+                )
         return stats
 
     # ---- Read side ----
