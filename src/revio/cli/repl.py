@@ -431,6 +431,55 @@ def _apply_url_change(new_url: str, cfg: Config, state: dict) -> None:
     _console.print("  [dim]matching available models on the new endpoint...[/]")
     _cmd_model("", cfg, state)
 
+    # Connectivity self-check with the chosen model. Some OpenAI-compat proxies
+    # 404 on chat unless the base URL ends with /v1 (model discovery tolerates a
+    # bare host, the chat path does not). If the bare URL fails, auto-append /v1,
+    # retry, and persist the working form — so the user never hits the confusing
+    # "lists models fine but every run 404s".
+    _verify_and_normalize_endpoint(cfg, state)
+
+
+def _verify_and_normalize_endpoint(cfg: Config, state: dict) -> None:
+    """Test the chat path with the chosen model; auto-add /v1 if a bare host fails.
+
+    Best-effort and cheap (one tiny chat call, same as the wizard). Only the
+    OpenAI-compatible family gets the /v1 fallback — Anthropic doesn't use it.
+    On success the normalized URL is persisted; on hard failure the user is
+    warned but the switch is left in place (they can fix the key/URL manually).
+    """
+    from .wizard import _test_connection
+
+    key = cfg.llm.resolve_api_key()
+    if not key or not cfg.llm.model:
+        return  # nothing to test with yet
+
+    _console.print("  [dim]testing connection…[/]")
+    ok, msg = _test_connection(
+        cfg.llm.provider, cfg.llm.api_url, key, cfg.llm.model, cfg.llm.disable_thinking
+    )
+    if ok:
+        _console.print("  [green]✓[/] endpoint reachable — agent is ready")
+        return
+
+    url = cfg.llm.api_url.rstrip("/")
+    if cfg.llm.provider in ("openai_compat", "custom") and not url.endswith("/v1"):
+        alt = url + "/v1"
+        ok2, msg2 = _test_connection(
+            cfg.llm.provider, alt, key, cfg.llm.model, cfg.llm.disable_thinking
+        )
+        if ok2:
+            cfg.llm.api_url = alt
+            save_user_config(cfg)
+            _console.print(
+                f"  [yellow]·[/] auto-fixed endpoint → [cyan]{alt}[/] "
+                f"[dim](added /v1 so chat calls resolve)[/]"
+            )
+            return
+        msg = msg2 or msg
+
+    _console.print(f"  [yellow]⚠[/] endpoint test failed: [dim]{msg}[/]")
+    _console.print("  [dim]double-check the URL/key with /url and /key.[/]")
+
 
 def _cmd_url(arg: str, cfg: Config, state: dict) -> bool:
     arg = arg.strip()

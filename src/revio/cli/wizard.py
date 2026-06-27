@@ -196,6 +196,19 @@ def run_wizard() -> Config | None:
 
     if do_test:
         ok, msg = _test_connection(preset["key"], api_url, api_key, model, disable_thinking)
+        # Auto-fix a missing /v1 on OpenAI-compatible endpoints: model discovery
+        # tolerates a bare host, but the chat path 404s without /v1. Normalize so
+        # the saved config just works.
+        if (
+            not ok
+            and preset["key"] in ("openai_compat", "custom")
+            and not api_url.rstrip("/").endswith("/v1")
+        ):
+            alt = api_url.rstrip("/") + "/v1"
+            ok2, msg2 = _test_connection(preset["key"], alt, api_key, model, disable_thinking)
+            if ok2:
+                api_url, ok, msg = alt, True, msg2
+                _console.print(f"  [yellow]·[/] auto-added /v1 → [cyan]{alt}[/]")
         if ok:
             _console.print(f"  [green]✓[/] Connection OK — {msg}")
         else:

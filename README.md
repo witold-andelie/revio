@@ -493,7 +493,7 @@ revio              # drop into REPL
 | `/model` | Interactive picker (live `/v1/models` + curated catalog) |
 | `/model <name>` | Set model directly |
 | `/models` | List available models on current endpoint |
-| `/url` | Change the API endpoint interactively — auto-matches the protocol, re-prompts for the key, and re-detects the models that endpoint serves (no config-file editing). Or `/url <url>` to set directly |
+| `/url` | Change the API endpoint interactively — auto-matches the protocol, re-prompts for the key, re-detects the models that endpoint serves, and runs a connectivity check that **auto-adds a missing `/v1`** if the bare host 404s (no config-file editing). Or `/url <url>` to set directly |
 | `/key` `/config` | Update the API key (masked) / open the config file |
 | `/profile <name>` | Switch profile |
 | `/mode <name>` | Default mode for next NL input |
