@@ -133,4 +133,12 @@ def _make_openai(config: Config, api_key: str, max_tokens: int):
         # the bare host or /v1 suffix interchangeably. We pass through as-is.
         kwargs["base_url"] = config.llm.api_url
 
+    # Opt-in: route via OpenAI's Responses API (/v1/responses) instead of
+    # chat/completions. Only for endpoints that support it (off by default).
+    # Benefits on reasoning/GPT-5.x models: server-side reasoning persistence
+    # across tool calls + better prompt caching. The rest of the agent is
+    # protocol-agnostic — tool_calls / .ainvoke surface the same way.
+    if config.llm.use_responses_api:
+        kwargs["use_responses_api"] = True
+
     return ChatOpenAI(**kwargs)

@@ -45,6 +45,11 @@ class LLMConfig(BaseModel):
     api_key_env: str = ""        # OR: name of env var to read from
     model: str = "claude-sonnet-4-5"
     disable_thinking: bool = False
+    # Opt-in: use OpenAI's Responses API (/v1/responses) instead of Chat
+    # Completions for openai_compat/custom endpoints. Off by default — most
+    # OpenAI-compatible providers only speak chat/completions. Only enable for
+    # endpoints that support it (OpenAI, Azure, GPT-5.x / Codex proxies).
+    use_responses_api: bool = False
 
     def resolve_api_key(self) -> str:
         """Get the API key from direct field or env var."""

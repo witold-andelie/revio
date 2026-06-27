@@ -234,6 +234,16 @@ model = "deepseek-v4-pro"
 # model = "claude-sonnet-4-6"
 ```
 
+### Responses API (opt-in)
+
+For OpenAI-compatible endpoints that support it (OpenAI, Azure, GPT-5.x / Codex
+proxies), revio can route via OpenAI's **Responses API** (`/v1/responses`)
+instead of chat/completions — better prompt caching and server-side reasoning
+persistence across tool calls on reasoning models. Off by default; toggle with
+`/responses on` in the REPL, or set `use_responses_api = true` under `[llm]`.
+Most providers (DeepSeek, local models, …) only speak chat/completions — leave
+it off for those.
+
 ### Memory / disk caps
 
 revio's on-disk memory (cross-session findings history, per-repo agent
@@ -495,6 +505,7 @@ revio              # drop into REPL
 | `/models` | List available models on current endpoint |
 | `/url` | Change the API endpoint interactively — auto-matches the protocol, re-prompts for the key, re-detects the models that endpoint serves, and runs a connectivity check that **auto-adds a missing `/v1`** if the bare host 404s (no config-file editing). Or `/url <url>` to set directly |
 | `/key` `/config` | Update the API key (masked) / open the config file |
+| `/responses on\|off` | Opt-in: route via OpenAI's Responses API (`/v1/responses`) for endpoints that support it (off by default) |
 | `/profile <name>` | Switch profile |
 | `/mode <name>` | Default mode for next NL input |
 | `/budget <n>` | Tool-call budget for this session |

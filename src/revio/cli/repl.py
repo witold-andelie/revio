@@ -48,6 +48,7 @@ SLASH_COMMANDS = {
     "/models":   "Alias for `/model list` — show all available models on current endpoint",
     "/url":      "Change API endpoint (/url to change interactively — re-keys + re-detects models; or /url <url>)",
     "/key":      "Update API key (masked input)",
+    "/responses": "Toggle the OpenAI Responses API for this endpoint (/responses on|off — opt-in, off by default)",
     "/profile":  "Switch language profile (auto / js / plc / python)",
     "/mode":     "Default mode for next NL input (review / audit / dedup)",
     "/budget":   "Set tool-call budget for this session (usage: /budget 25)",
@@ -298,6 +299,7 @@ def _handle_slash(line: str, cfg: Config, state: dict) -> bool:
         "/models": lambda arg, cfg, state: _cmd_model("list", cfg, state),
         "/url": _cmd_url,
         "/key": _cmd_key,
+        "/responses": _cmd_responses,
         "/profile": _cmd_profile,
         "/mode": _cmd_mode,
         "/budget": _cmd_budget,
@@ -521,6 +523,43 @@ def _cmd_key(arg: str, cfg: Config, state: dict) -> bool:
     cfg.llm.api_key = new_key.strip()
     save_user_config(cfg)
     _console.print(f"  [green]✓[/] api_key updated")
+    return True
+
+
+def _cmd_responses(arg: str, cfg: Config, state: dict) -> bool:
+    """Toggle the OpenAI Responses API (/v1/responses) for the current endpoint.
+
+    Opt-in, off by default. Only meaningful for OpenAI-compatible endpoints
+    that actually support it (OpenAI, Azure, GPT-5.x / Codex proxies); most
+    others speak only chat/completions.
+    """
+    arg = arg.strip().lower()
+    if not arg:
+        cur = "on" if cfg.llm.use_responses_api else "off"
+        _console.print(
+            f"  Responses API: [cyan]{cur}[/]  [dim](endpoint: {cfg.llm.api_url})[/]"
+        )
+        _console.print(
+            "  [dim]usage: /responses on | off — only for endpoints that serve /v1/responses[/]"
+        )
+        return True
+    if arg in ("on", "true", "1", "yes", "enable"):
+        if cfg.llm.provider not in ("openai_compat", "custom"):
+            _console.print(
+                f"  [yellow]·[/] Responses API only applies to OpenAI-compatible "
+                f"endpoints (current provider: [cyan]{cfg.llm.provider}[/]) — no change."
+            )
+            return True
+        cfg.llm.use_responses_api = True
+        save_user_config(cfg)
+        _console.print("  [green]✓[/] Responses API → [cyan]on[/]  [dim](routes via /v1/responses)[/]")
+        return True
+    if arg in ("off", "false", "0", "no", "disable"):
+        cfg.llm.use_responses_api = False
+        save_user_config(cfg)
+        _console.print("  [green]✓[/] Responses API → [cyan]off[/]  [dim](routes via /v1/chat/completions)[/]")
+        return True
+    _console.print("  [red]✗[/] usage: /responses on | off")
     return True
 
 
