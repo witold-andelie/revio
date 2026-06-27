@@ -24,7 +24,7 @@ from typing import Callable, Optional
 import questionary
 from prompt_toolkit import PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
-from prompt_toolkit.completion import Completer, Completion, PathCompleter, WordCompleter
+from prompt_toolkit.completion import Completer, Completion, PathCompleter
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.styles import Style
@@ -46,7 +46,7 @@ SLASH_COMMANDS = {
     "/?":        "Alias for /help",
     "/model":    "Pick or change LLM model (`/model` to browse, `/model list`, `/model <name>`)",
     "/models":   "Alias for `/model list` — show all available models on current endpoint",
-    "/url":      "Change API endpoint URL (usage: /url <url>)",
+    "/url":      "Change API endpoint (/url to change interactively — re-keys + re-detects models; or /url <url>)",
     "/key":      "Update API key (masked input)",
     "/profile":  "Switch language profile (auto / js / plc / python)",
     "/mode":     "Default mode for next NL input (review / audit / dedup)",
@@ -126,18 +126,29 @@ class _ReplCompleter(Completer):
     """Tab-completes slash commands and file paths."""
 
     def __init__(self):
-        self._slash = WordCompleter(list(SLASH_COMMANDS.keys()), ignore_case=True)
         self._path = PathCompleter(expanduser=True)
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
+        # Slash command: filter by the FULL "/..." token typed so far, so you
+        # can keep typing letters (/u → /url) and still get a live, narrowing
+        # dropdown — not just scroll the whole list. WordCompleter used to be
+        # used here, but it splits words on "/", so typing after the slash
+        # extracted a slash-less word that matched nothing and cleared the menu.
         if text.startswith("/") and " " not in text:
-            yield from self._slash.get_completions(document, complete_event)
-        else:
-            # Best-effort path completion when looking at a path-shaped token
-            last = text.split()[-1] if text.split() else ""
-            if last.startswith("/") or last.startswith("~") or last.startswith("."):
-                yield from self._path.get_completions(document, complete_event)
+            for cmd, desc in SLASH_COMMANDS.items():
+                if cmd.startswith(text.lower()):
+                    yield Completion(
+                        cmd,
+                        start_position=-len(text),  # replace the whole "/foo" token
+                        display=cmd,
+                        display_meta=desc,
+                    )
+            return
+        # Best-effort path completion when looking at a path-shaped token
+        last = text.split()[-1] if text.split() else ""
+        if last.startswith("/") or last.startswith("~") or last.startswith("."):
+            yield from self._path.get_completions(document, complete_event)
 
 
 # --- REPL session -------------------------------------------------------------
@@ -209,6 +220,7 @@ def run_repl():
         history=FileHistory(str(_history_path())),
         auto_suggest=AutoSuggestFromHistory(),
         completer=_ReplCompleter(),
+        complete_while_typing=True,  # live dropdown as you type "/..." (Claude-Code-like)
         style=_PROMPT_STYLE,
     )
 
@@ -377,16 +389,78 @@ def _cmd_model(arg: str, cfg: Config, state: dict) -> bool:
     return True
 
 
-def _cmd_url(arg: str, cfg: Config, state: dict) -> bool:
-    if not arg:
-        _console.print(f"  current url: [cyan]{cfg.llm.api_url}[/]")
-        return True
-    if not arg.startswith(("http://", "https://")):
-        _console.print("  [red]✗[/] URL must start with http:// or https://")
-        return True
-    cfg.llm.api_url = arg
+def _infer_provider(url: str) -> str:
+    """Guess the protocol family from an endpoint URL.
+
+    Anthropic Messages API for the official host or an `/anthropic`-suffixed
+    gateway (e.g. Mimo); everything else (DeepSeek, Mistral, OpenRouter,
+    OpenAI, Together, vLLM, Ollama, LM Studio, ...) speaks OpenAI-compatible.
+    """
+    u = url.lower().rstrip("/")
+    if "anthropic.com" in u or u.endswith("/anthropic"):
+        return "anthropic"
+    return "openai_compat"
+
+
+def _apply_url_change(new_url: str, cfg: Config, state: dict) -> None:
+    """Switch the endpoint, auto-match its protocol, then re-key + re-pick model.
+
+    After this the agent connects to the new API automatically (correct
+    protocol) and the model is chosen from what that endpoint actually serves —
+    the user never has to edit the config file by hand.
+    """
+    new_url = new_url.strip()
+    prev_provider = cfg.llm.provider
+    cfg.llm.api_url = new_url
+    cfg.llm.provider = _infer_provider(new_url)  # type: ignore[assignment]
     save_user_config(cfg)
-    _console.print(f"  [green]✓[/] api_url → [cyan]{arg}[/]")
+    _console.print(
+        f"  [green]✓[/] endpoint → [cyan]{new_url}[/]  "
+        f"[dim](protocol auto-set: {cfg.llm.provider})[/]"
+    )
+
+    # A different endpoint almost always needs its own key — offer to set it.
+    if questionary.confirm(
+        "Update the API key for this endpoint now?",
+        default=(cfg.llm.provider != prev_provider),
+    ).ask():
+        _cmd_key("", cfg, state)
+
+    # Auto-discover the models this endpoint serves and let the user pick one.
+    # Reuses /model's live discovery — no config-file editing needed.
+    _console.print("  [dim]matching available models on the new endpoint...[/]")
+    _cmd_model("", cfg, state)
+
+
+def _cmd_url(arg: str, cfg: Config, state: dict) -> bool:
+    arg = arg.strip()
+    # Explicit `/url <url>` keeps the direct path (also used by the NL router).
+    if arg:
+        if not arg.startswith(("http://", "https://")):
+            _console.print("  [red]✗[/] URL must start with http:// or https://")
+            return True
+        _apply_url_change(arg, cfg, state)
+        return True
+
+    # Bare `/url` → show current endpoint, then offer to change it interactively.
+    _console.print(
+        f"  current endpoint: [cyan]{cfg.llm.api_url}[/]  "
+        f"[dim](protocol: {cfg.llm.provider})[/]"
+    )
+    if not questionary.confirm("Change the API endpoint URL?", default=False).ask():
+        _console.print("  [dim]unchanged[/]")
+        return True
+    new_url = questionary.text(
+        "New API URL:",
+        default=cfg.llm.api_url,
+        validate=lambda x: True
+        if x.strip().startswith(("http://", "https://"))
+        else "URL must start with http:// or https://",
+    ).ask()
+    if not new_url:
+        _console.print("  [dim]cancelled[/]")
+        return True
+    _apply_url_change(new_url, cfg, state)
     return True
 
 

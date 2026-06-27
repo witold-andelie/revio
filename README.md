@@ -493,12 +493,17 @@ revio              # drop into REPL
 | `/model` | Interactive picker (live `/v1/models` + curated catalog) |
 | `/model <name>` | Set model directly |
 | `/models` | List available models on current endpoint |
-| `/url` `/key` `/config` | Endpoint / key / config-file management |
+| `/url` | Change the API endpoint interactively — auto-matches the protocol, re-prompts for the key, and re-detects the models that endpoint serves (no config-file editing). Or `/url <url>` to set directly |
+| `/key` `/config` | Update the API key (masked) / open the config file |
 | `/profile <name>` | Switch profile |
 | `/mode <name>` | Default mode for next NL input |
 | `/budget <n>` | Tool-call budget for this session |
 | `/cost` | Real token usage + USD cost for the REPL session |
 | `/clear` `/history` `/exit` | Standard |
+
+Type `/` for the full menu, then keep typing to filter it live (`/u` → `/url`,
+`/mo` → `/model` · `/models` · `/mode`) — the dropdown narrows as you type and
+Enter/Tab completes the highlighted command.
 
 Non-slash input is routed by an intent LLM (multilingual by design) into:
 
