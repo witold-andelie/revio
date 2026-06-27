@@ -216,21 +216,21 @@ providers:
 [llm]
 provider = "openai_compat"
 api_url = "https://api.deepseek.com"
-api_key = "sk-..."
+api_key = "<YOUR_DEEPSEEK_API_KEY>"
 model = "deepseek-v4-pro"
 
 # Mistral (EU-sovereign — recommended for European customers)
 # [llm]
 # provider = "openai_compat"
 # api_url = "https://api.mistral.ai/v1"
-# api_key = "..."
+# api_key = "<YOUR_MISTRAL_API_KEY>"
 # model = "codestral-latest"           # code-specialized 22B, perfect for revio
 
 # Anthropic native
 # [llm]
 # provider = "anthropic"
 # api_url = "https://api.anthropic.com"
-# api_key = "sk-ant-..."
+# api_key = "<YOUR_ANTHROPIC_API_KEY>"
 # model = "claude-sonnet-4-6"
 ```
 
